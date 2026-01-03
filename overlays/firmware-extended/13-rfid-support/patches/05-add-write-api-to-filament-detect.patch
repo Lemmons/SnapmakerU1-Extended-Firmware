@@ -1,10 +1,16 @@
-diff -uNr rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py rootfs/home/lava/klipper/klippy/extras/filament_detect.py
---- rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py	2025-11-06 05:01:19.000000000 +0100
-+++ rootfs/home/lava/klipper/klippy/extras/filament_detect.py	2026-01-03 15:00:00.000000000 +0100
-@@ -193,6 +193,89 @@
-
-         return self._filament_info_ret[channel]
-
+--- rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py	2025-12-14 17:32:55.000000000 +0000
++++ rootfs/home/lava/klipper/klippy/extras/filament_detect.py	2026-01-03 19:34:46.628468612 +0000
+@@ -1,5 +1,6 @@
+ import logging, copy, os
+ from . import filament_protocol
++from . import filament_protocol_ndef
+ from . import fm175xx_reader
+ from . import filament_feed
+ 
+@@ -283,6 +284,92 @@
+             logging.error("save filament_detect config failed!")
+         return ret
+ 
 +    def request_update_filament_weight(self, channel, density, full_weight, current_weight, cumulative_usage=0):
 +        """Update filament usage tracking fields on RFID tag.
 +
@@ -92,4 +98,5 @@ diff -uNr rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py roo
 +        return False
 +
  def load_config(config):
-     return FilamentDetect(config)
+     return FilamentDetector(config)
+ 
