@@ -1,16 +1,10 @@
 --- rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py	2025-12-14 17:32:55.000000000 +0000
 +++ rootfs/home/lava/klipper/klippy/extras/filament_detect.py	2026-01-03 19:34:46.628468612 +0000
-@@ -1,5 +1,6 @@
- import logging, copy, os
- from . import filament_protocol
-+from . import filament_protocol_ndef
- from . import fm175xx_reader
- from . import filament_feed
- 
-@@ -283,6 +284,92 @@
+@@ -291,7 +291,93 @@
+         if not ret:
              logging.error("save filament_detect config failed!")
          return ret
- 
++
 +    def request_update_filament_weight(self, channel, density, full_weight, current_weight, cumulative_usage=0):
 +        """Update filament usage tracking fields on RFID tag.
 +
@@ -61,7 +55,7 @@
 +                    logging.info("NTAG weight update successful on channel %d", channel)
 +                    return True
 +                logging.warning("NTAG write retry %d/%d failed for channel %d", retry + 1, retry_times, channel)
-+
+ 
 +            logging.error("NTAG weight update failed after %d retries on channel %d", retry_times, channel)
 +            return False
 +

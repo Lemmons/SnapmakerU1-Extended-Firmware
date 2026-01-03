@@ -1,9 +1,10 @@
 --- rootfs.original/home/lava/klipper/klippy/extras/fm175xx_reader.py	2025-12-14 17:32:55.000000000 +0000
 +++ rootfs/home/lava/klipper/klippy/extras/fm175xx_reader.py	2026-01-03 19:33:05.336465593 +0000
-@@ -844,6 +844,74 @@
- 
+@@ -919,7 +919,75 @@
+         ret.err_code = FM175XX_OK
+         ret.out_param = card_data_tmp
          return ret
- 
++
 +    # Reader-A: NTAG/Ultralight, write a page (4 bytes)
 +    def __reader_a_ntag_page_write(self, page:int, data:list) -> int:
 +        ret = 0
@@ -69,16 +70,17 @@
 +            if ret != FM175XX_OK:
 +                logging.error("NTAG page %d write failed after %d retries", page_no, retry_times)
 +                return FM175XX_CARD_WRITE_ERR
-+
+ 
 +        return FM175XX_OK
 +
      # Reader-A: M1, read all data
      def __reader_a_m1_read_all_data(self, uid:list, auth_mode:int, auth_key:list, retry_times = 3) -> Fm175xxReturnVal:
          ret = Fm175xxReturnVal()
-@@ -885,6 +953,52 @@
+@@ -960,7 +1028,53 @@
+         ret.err_code = FM175XX_OK
          ret.out_param = card_data_tmp
          return ret
- 
++
 +    # Reader-A: M1, write specific sector data
 +    def __reader_a_m1_write_sector_data(self, sector:int, block_offset:int, data:list, uid:list, auth_mode:int, auth_key:list, retry_times=3) -> int:
 +        if len(data) != 16:
@@ -98,7 +100,7 @@
 +        if ret != FM175XX_OK:
 +            logging.error("M1 sector %d authentication failed after %d retries", sector, retry_times)
 +            return FM175XX_CARD_AUTH_ERR
-+
+ 
 +        # Calculate block number
 +        block_num = sector * 4 + block_offset
 +
