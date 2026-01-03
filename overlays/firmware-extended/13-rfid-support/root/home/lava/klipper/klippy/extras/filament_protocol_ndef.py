@@ -231,6 +231,110 @@ def openspool_parse_payload(payload):
         logging.exception("OpenSpool payload parsing failed: %s", str(e))
         return filament_protocol.FILAMENT_PROTO_ERR, None
 
+def openspool_encode_payload(info):
+    """Encode filament info dict to OpenSpool JSON payload."""
+    try:
+        # Build JSON dict with OpenSpool fields
+        data = {
+            'protocol': 'openspool',
+            'version': '1.0',
+            'type': info.get('MAIN_TYPE', 'PLA'),
+            'brand': info.get('VENDOR', 'Generic'),
+        }
+
+        # Add subtype if available
+        if info.get('SUB_TYPE') and info['SUB_TYPE'] != 'Reserved':
+            data['subtype'] = info['SUB_TYPE']
+
+        # Add color
+        rgb = info.get('RGB_1', 0xFFFFFF)
+        color_hex = f"#{rgb:06X}"
+        data['color_hex'] = color_hex
+
+        # Add temperatures
+        if info.get('HOTEND_MIN_TEMP', 0) > 0:
+            data['min_temp'] = str(info['HOTEND_MIN_TEMP'])
+        if info.get('HOTEND_MAX_TEMP', 0) > 0:
+            data['max_temp'] = str(info['HOTEND_MAX_TEMP'])
+        if info.get('BED_TEMP', 0) > 0:
+            data['bed_min_temp'] = str(info['BED_TEMP'])
+            data['bed_max_temp'] = str(info['BED_TEMP'])
+
+        # Add usage tracking fields
+        diameter_mm = info.get('DIAMETER', 175) / 100.0  # Convert from 1/100mm to mm
+        data['diameter'] = diameter_mm
+
+        if info.get('DENSITY', 0.0) > 0:
+            data['density'] = info['DENSITY']
+
+        if info.get('FULL_WEIGHT', 0) > 0:
+            data['full_weight'] = info['FULL_WEIGHT']
+
+        if info.get('CURRENT_WEIGHT', 0) > 0:
+            data['current_weight'] = info['CURRENT_WEIGHT']
+
+        if info.get('CUMULATIVE_USAGE', 0) > 0:
+            data['cumulative_usage'] = info['CUMULATIVE_USAGE']
+
+        # Encode to JSON bytes
+        json_str = json.dumps(data, separators=(',', ':'))  # Compact JSON
+        return filament_protocol.FILAMENT_PROTO_OK, json_str.encode('utf-8')
+
+    except Exception as e:
+        logging.exception("OpenSpool payload encoding failed: %s", str(e))
+        return filament_protocol.FILAMENT_PROTO_ERR, None
+
+def ndef_encode(info):
+    """Encode filament info dict to complete NDEF message for NTAG."""
+    try:
+        # Encode payload
+        error, payload = openspool_encode_payload(info)
+        if error != filament_protocol.FILAMENT_PROTO_OK:
+            return error, None
+
+        mime_type = b'application/json'
+
+        # Build NDEF record
+        # Header byte: MB=1, ME=1, CF=0, SR=1, IL=0, TNF=0x02 (Media-type)
+        header = 0xD2  # 11010010
+        type_len = len(mime_type)
+        payload_len = len(payload)
+
+        # NDEF record structure (short record format)
+        record = bytearray()
+        record.append(header)
+        record.append(type_len)
+        record.append(payload_len)  # SR flag set, so only 1 byte for length
+        record.extend(mime_type)
+        record.extend(payload)
+
+        # Build TLV structure
+        tlv = bytearray()
+        tlv.append(0x03)  # NDEF Message TLV tag
+        if len(record) < 255:
+            tlv.append(len(record))  # Length (1 byte)
+        else:
+            tlv.append(0xFF)  # Extended length format
+            tlv.append((len(record) >> 8) & 0xFF)
+            tlv.append(len(record) & 0xFF)
+        tlv.extend(record)
+        tlv.append(0xFE)  # Terminator TLV
+
+        # Build complete NDEF message with CC (Capability Container)
+        ndef_data = bytearray()
+        ndef_data.append(0xE1)  # NDEF Magic Number
+        ndef_data.append(0x10)  # Version 1.0
+        ndef_data.append(0x6D)  # Data area size (440 bytes / 8 = 55 => 0x37, but use conservative 0x6D for 880 bytes)
+        ndef_data.append(0x00)  # Read/Write access
+        ndef_data.extend(tlv)
+
+        logging.info(f"NDEF encoded: {len(ndef_data)} bytes total")
+        return filament_protocol.FILAMENT_PROTO_OK, list(ndef_data)
+
+    except Exception as e:
+        logging.exception("NDEF encoding failed: %s", str(e))
+        return filament_protocol.FILAMENT_PROTO_ERR, None
+
 def ndef_proto_data_parse(data_buf):
     error, records = ndef_parse(data_buf)
 

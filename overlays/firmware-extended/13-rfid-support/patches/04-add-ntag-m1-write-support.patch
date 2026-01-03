@@ -1,0 +1,133 @@
+diff -uNr rootfs.original/home/lava/klipper/klippy/extras/fm175xx_reader.py rootfs/home/lava/klipper/klippy/extras/fm175xx_reader.py
+--- rootfs.original/home/lava/klipper/klippy/extras/fm175xx_reader.py	2025-11-06 05:01:19.000000000 +0100
++++ rootfs/home/lava/klipper/klippy/extras/fm175xx_reader.py	2026-01-03 14:00:00.000000000 +0100
+@@ -844,6 +920,72 @@
+
+         return ret
+
++    # Reader-A: NTAG/Ultralight, write a page (4 bytes)
++    def __reader_a_ntag_page_write(self, page:int, data:list) -> int:
++        ret = 0
++        outbuf = [0] * 6
++        inbuf = [0] * 1
++        cmd = Fm175xxCmdMetaData()
++
++        if len(data) != 4:
++            logging.error("NTAG page write requires exactly 4 bytes, got %d", len(data))
++            return FM175XX_CARD_COMM_ERR
++
++        cmd.send_crc_en = FM175XX_SET
++        cmd.recv_crc_en = FM175XX_RESET
++        cmd.send_buff = outbuf
++        cmd.recv_buff = inbuf
++        cmd.send_buff[0] = 0xA2  # WRITE command for NTAG
++        cmd.send_buff[1] = page
++        cmd.send_buff[2] = data[0]
++        cmd.send_buff[3] = data[1]
++        cmd.send_buff[4] = data[2]
++        cmd.send_buff[5] = data[3]
++        cmd.bytes_to_send = 6
++        cmd.bits_to_send = 0
++        cmd.bits_to_recv = 0
++        cmd.bytes_to_recv = 1
++        cmd.timeout = 10
++        cmd.cmd = FM175XX_CMD_TRANSCEIVE
++        result = self.__command_exe(cmd)
++        ret = result.err_code
++
++        if (result.err_code != FM175XX_OK) or (result.out_param.bits_recved != 4) or (result.out_param.recv_buff[0] & 0x0F != 0x0A):
++            if (result.err_code == FM175XX_OK):
++                ret = FM175XX_CARD_COMM_ERR
++                logging.error("NTAG page write ACK error: bits=%d, ack=0x%02X",
++                            result.out_param.bits_recved, result.out_param.recv_buff[0] if result.out_param.bits_recved > 0 else 0)
++
++        return ret
++
++    # Reader-A: NTAG215, write user data area
++    def __reader_a_ntag215_write_user_data(self, data:list, start_page=FM175XX_NTAG215_USER_START_PAGE, retry_times=3) -> int:
++        if len(data) > (FM175XX_NTAG215_USER_END_PAGE - start_page + 1) * FM175XX_NTAG215_BYTES_PER_PAGE:
++            logging.error("NTAG write data too large: %d bytes", len(data))
++            return FM175XX_CARD_WRITE_ERR
++
++        # Calculate number of pages to write
++        num_pages = (len(data) + FM175XX_NTAG215_BYTES_PER_PAGE - 1) // FM175XX_NTAG215_BYTES_PER_PAGE
++
++        for page_offset in range(num_pages):
++            page_no = start_page + page_offset
++            if page_no > FM175XX_NTAG215_USER_END_PAGE:
++                break
++
++            # Extract 4 bytes for this page
++            offset = page_offset * FM175XX_NTAG215_BYTES_PER_PAGE
++            page_data = data[offset : offset + FM175XX_NTAG215_BYTES_PER_PAGE]
++            page_data += [0] * (4 - len(page_data))  # Pad if needed
++
++            # Retry write
++            for retry in range(retry_times):
++                ret = self.__reader_a_ntag_page_write(page_no, page_data)
++                if ret == FM175XX_OK:
++                    break
++            if ret != FM175XX_OK:
++                logging.error("NTAG page %d write failed after %d retries", page_no, retry_times)
++                return FM175XX_CARD_WRITE_ERR
++
++        return FM175XX_OK
++
+     # Reader-A: M1, read all data
+     def __reader_a_m1_read_all_data(self, uid:list, auth_mode:int, auth_key:list, retry_times = 3) -> Fm175xxReturnVal:
+@@ -920,6 +1062,55 @@
+
+         return ret
+
++    # Reader-A: M1, write specific sector data
++    def __reader_a_m1_write_sector_data(self, sector:int, block_offset:int, data:list, uid:list, auth_mode:int, auth_key:list, retry_times=3) -> int:
++        if len(data) != 16:
++            logging.error("M1 block write requires exactly 16 bytes, got %d", len(data))
++            return FM175XX_CARD_WRITE_ERR
++
++        if block_offset >= 3:  # Block 3 is the sector trailer, don't write to it
++            logging.error("M1 block offset must be 0-2, got %d", block_offset)
++            return FM175XX_CARD_WRITE_ERR
++
++        # Authenticate to the sector
++        for retry in range(retry_times):
++            ret = self.__reader_a_mifare_auth(auth_mode, sector, auth_key[sector], uid)
++            if ret == FM175XX_OK:
++                break
++
++        if ret != FM175XX_OK:
++            logging.error("M1 sector %d authentication failed after %d retries", sector, retry_times)
++            return FM175XX_CARD_AUTH_ERR
++
++        # Calculate absolute block number
++        block_no = sector * 4 + block_offset
++
++        # Write the block
++        for retry in range(retry_times):
++            ret = self.__reader_a_m1_block_write(block_no, data)
++            if ret == FM175XX_OK:
++                break
++
++        if ret != FM175XX_OK:
++            logging.error("M1 block %d write failed after %d retries", block_no, retry_times)
++            return FM175XX_CARD_WRITE_ERR
++
++        # Verify write by reading back
++        read_ret = self.__reader_a_m1_block_read(block_no)
++        if read_ret.err_code != FM175XX_OK:
++            logging.error("M1 block %d read-back verification failed", block_no)
++            return FM175XX_CARD_READ_ERR
++
++        # Compare data
++        if read_ret.out_param != data:
++            logging.error("M1 block %d write verification failed: data mismatch", block_no)
++            logging.error("Expected: %s", ' '.join(['%02X' % b for b in data]))
++            logging.error("Got:      %s", ' '.join(['%02X' % b for b in read_ret.out_param]))
++            return FM175XX_CARD_WRITE_ERR
++
++        logging.info("M1 sector %d block %d written and verified successfully", sector, block_offset)
++        return FM175XX_OK
++
+     def _hkdf_create_key(self, ikm, salt, key_type='a'):
+         sector_count = 16
+         key_len = 6

@@ -1,0 +1,95 @@
+diff -uNr rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py rootfs/home/lava/klipper/klippy/extras/filament_detect.py
+--- rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py	2025-11-06 05:01:19.000000000 +0100
++++ rootfs/home/lava/klipper/klippy/extras/filament_detect.py	2026-01-03 15:00:00.000000000 +0100
+@@ -193,6 +193,89 @@
+
+         return self._filament_info_ret[channel]
+
++    def request_update_filament_weight(self, channel, density, full_weight, current_weight, cumulative_usage=0):
++        """Update filament usage tracking fields on RFID tag.
++
++        Args:
++            channel: Filament channel (0 or 1)
++            density: Filament density in g/cm³
++            full_weight: Initial spool weight in grams
++            current_weight: Current estimated weight in grams
++            cumulative_usage: Total filament used from this spool in grams (optional)
++
++        Returns:
++            True if write succeeded, False otherwise
++        """
++        if channel not in [0, 1]:
++            logging.error("Invalid channel %d for weight update", channel)
++            return False
++
++        # Get current filament info
++        if channel not in self._filament_info_ret or not self._filament_info_ret[channel]:
++            logging.error("No filament info available for channel %d", channel)
++            return False
++
++        info = self._filament_info_ret[channel]
++        card_type = self._card_type[channel]
++
++        # Update info dict with new values
++        info['DENSITY'] = density
++        info['FULL_WEIGHT'] = full_weight
++        info['CURRENT_WEIGHT'] = current_weight
++        info['CUMULATIVE_USAGE'] = cumulative_usage
++
++        # Write to tag based on type
++        retry_times = 3
++
++        if card_type == fm175xx_reader.FM175XX_MIFARE_CARD_TYPE_NTAG:
++            # NTAG tag - rewrite entire NDEF message
++            logging.info("Updating NTAG tag on channel %d with weight data", channel)
++
++            error, ndef_data = filament_protocol_ndef.ndef_encode(info)
++            if error != filament_protocol.FILAMENT_PROTO_OK:
++                logging.error("Failed to encode NDEF data for channel %d", channel)
++                return False
++
++            # Activate and write to NTAG
++            for retry in range(retry_times):
++                ret = self.filament_dt_obj._Fm175xxReader__reader_a_ntag215_write_user_data(ndef_data)
++                if ret == fm175xx_reader.FM175XX_OK:
++                    logging.info("NTAG weight update successful on channel %d", channel)
++                    return True
++                logging.warning("NTAG write retry %d/%d failed for channel %d", retry + 1, retry_times, channel)
++
++            logging.error("NTAG weight update failed after %d retries on channel %d", retry_times, channel)
++            return False
++
++        elif card_type == fm175xx_reader.FM175XX_MIFARE_CARD_TYPE_M1:
++            # M1 tag - write only Sector 3, Block 0
++            logging.info("Updating M1 tag on channel %d with weight data", channel)
++
++            error, block_data = filament_protocol.m1_proto_encode_sector3(info)
++            if error != filament_protocol.FILAMENT_PROTO_OK:
++                logging.error("Failed to encode M1 Sector 3 data for channel %d", channel)
++                return False
++
++            # Write to Sector 3, Block 0
++            uid = info.get('CARD_UID', [])
++            if not uid:
++                logging.error("No UID available for M1 tag on channel %d", channel)
++                return False
++
++            for retry in range(retry_times):
++                ret = self.filament_dt_obj._Fm175xxReader__reader_a_m1_write_sector_data(
++                    3, 0, block_data, uid,
++                    fm175xx_reader.FM175XX_M1_CARD_AUTH_MODE_A,
++                    self.filament_dt_obj._hkdf_key_a
++                )
++                if ret == fm175xx_reader.FM175XX_OK:
++                    logging.info("M1 weight update successful on channel %d", channel)
++                    return True
++                logging.warning("M1 write retry %d/%d failed for channel %d", retry + 1, retry_times, channel)
++
++            logging.error("M1 weight update failed after %d retries on channel %d", retry_times, channel)
++            return False
++
++        logging.error("Unsupported card type %d for channel %d", card_type, channel)
++        return False
++
+ def load_config(config):
+     return FilamentDetect(config)

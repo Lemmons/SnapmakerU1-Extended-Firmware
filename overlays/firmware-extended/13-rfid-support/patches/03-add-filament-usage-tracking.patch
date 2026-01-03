@@ -1,8 +1,9 @@
 diff -uNr rootfs.original/home/lava/klipper/klippy/extras/filament_protocol.py rootfs/home/lava/klipper/klippy/extras/filament_protocol.py
 --- rootfs.original/home/lava/klipper/klippy/extras/filament_protocol.py	2025-11-06 05:01:19.000000000 +0100
 +++ rootfs/home/lava/klipper/klippy/extras/filament_protocol.py	2026-01-03 12:00:00.000000000 +0100
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
  import copy
++import logging
 +import struct
  from cryptography.hazmat.primitives import hashes, serialization
  from cryptography.hazmat.primitives.asymmetric import padding
@@ -32,7 +33,7 @@ diff -uNr rootfs.original/home/lava/klipper/klippy/extras/filament_protocol.py r
  # ERROR CODE
  FILAMENT_PROTO_OK                               = 0
  FILAMENT_PROTO_ERR                              = -1
-@@ -420,6 +431,22 @@
+@@ -420,6 +431,58 @@
 
      info['CARD_UID'] = data_buf[M1_PROTO_UID_POS : M1_PROTO_UID_POS + M1_PROTO_UID_LEN]
 
@@ -56,3 +57,40 @@ diff -uNr rootfs.original/home/lava/klipper/klippy/extras/filament_protocol.py r
      info['OFFICIAL'] = True
 
      return FILAMENT_PROTO_OK, info
++
++def m1_proto_encode_sector3(info):
++    """Encode filament usage tracking fields to Sector 3, Block 0 (16 bytes)."""
++    try:
++        block_data = bytearray(16)
++
++        # Density (float32, IEEE 754, little-endian) - bytes 0-3
++        density = float(info.get('DENSITY', 0.0))
++        density_bytes = struct.pack('<f', density)
++        block_data[0:4] = density_bytes
++
++        # Full weight (uint32, little-endian) - bytes 4-7
++        full_weight = int(info.get('FULL_WEIGHT', 0))
++        block_data[4] = full_weight & 0xFF
++        block_data[5] = (full_weight >> 8) & 0xFF
++        block_data[6] = (full_weight >> 16) & 0xFF
++        block_data[7] = (full_weight >> 24) & 0xFF
++
++        # Current weight (uint32, little-endian) - bytes 8-11
++        current_weight = int(info.get('CURRENT_WEIGHT', 0))
++        block_data[8] = current_weight & 0xFF
++        block_data[9] = (current_weight >> 8) & 0xFF
++        block_data[10] = (current_weight >> 16) & 0xFF
++        block_data[11] = (current_weight >> 24) & 0xFF
++
++        # Cumulative usage (uint32, little-endian) - bytes 12-15
++        cumulative_usage = int(info.get('CUMULATIVE_USAGE', 0))
++        block_data[12] = cumulative_usage & 0xFF
++        block_data[13] = (cumulative_usage >> 8) & 0xFF
++        block_data[14] = (cumulative_usage >> 16) & 0xFF
++        block_data[15] = (cumulative_usage >> 24) & 0xFF
++
++        return FILAMENT_PROTO_OK, list(block_data)
++
++    except Exception as e:
++        logging.error("M1 Sector 3 encoding failed: %s", str(e))
++        return FILAMENT_PROTO_ERR, None
