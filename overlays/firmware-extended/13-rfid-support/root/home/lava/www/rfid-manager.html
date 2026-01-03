@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RFID Tag Manager - Snapmaker U1</title>
+    <link rel="stylesheet" href="rfid-manager.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>RFID Tag Manager</h1>
+            <button id="refresh-all" class="btn btn-primary">Refresh All Channels</button>
+        </header>
+
+        <div id="channels-grid" class="channels-grid">
+            <!-- Channel cards will be dynamically inserted here -->
+        </div>
+
+        <div id="operations-panel" class="operations-panel">
+            <h2>Tag Operations</h2>
+
+            <!-- Write New Tag -->
+            <section class="operation-section">
+                <h3>Write New NTAG Tag</h3>
+                <form id="write-form" class="operation-form">
+                    <div class="form-row">
+                        <label>Channel:
+                            <select name="channel" required>
+                                <option value="0">0</option>
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="3">3</option>
+                            </select>
+                        </label>
+                        <label>Material Type:
+                            <select name="type" required>
+                                <option value="PLA">PLA</option>
+                                <option value="PETG">PETG</option>
+                                <option value="ABS">ABS</option>
+                                <option value="TPU">TPU</option>
+                                <option value="PVA">PVA</option>
+                                <option value="NYLON">NYLON</option>
+                                <option value="ASA">ASA</option>
+                                <option value="PC">PC</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="form-row">
+                        <label>Brand:
+                            <input type="text" name="brand" value="Generic" required>
+                        </label>
+                        <label>Subtype (optional):
+                            <input type="text" name="subtype" placeholder="e.g., Matte, Silk">
+                        </label>
+                    </div>
+                    <div class="form-row">
+                        <label>Color:
+                            <div class="color-input-group">
+                                <input type="color" id="color-picker" value="#FFFFFF">
+                                <input type="text" name="color_hex" id="color-hex" value="#FFFFFF" pattern="^#[0-9A-Fa-f]{6}$" placeholder="#FFFFFF" required>
+                            </div>
+                        </label>
+                        <label>Diameter (mm):
+                            <input type="number" name="diameter" value="1.75" step="0.01" min="1.0" max="3.0" required>
+                        </label>
+                        <label>Density (g/cm³):
+                            <input type="number" name="density" step="0.01" min="0.5" max="2.0" placeholder="Auto from material">
+                        </label>
+                    </div>
+                    <div class="form-row">
+                        <label>Min Temp (°C):
+                            <input type="number" name="min_temp" min="150" max="300" placeholder="Auto from material">
+                        </label>
+                        <label>Max Temp (°C):
+                            <input type="number" name="max_temp" min="150" max="300" placeholder="Auto from material">
+                        </label>
+                        <label>Bed Temp (°C):
+                            <input type="number" name="bed_temp" min="0" max="150" placeholder="Auto from material">
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-success">Write Tag</button>
+                </form>
+            </section>
+
+            <!-- Erase Tag -->
+            <section class="operation-section">
+                <h3>Erase NTAG Tag</h3>
+                <form id="erase-form" class="operation-form">
+                    <div class="form-row">
+                        <label>Channel:
+                            <select name="channel" required>
+                                <option value="0">0</option>
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="3">3</option>
+                            </select>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="confirm" required>
+                            I confirm erasing this tag (irreversible)
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-danger">Erase Tag</button>
+                </form>
+            </section>
+        </div>
+
+        <div id="status-message" class="status-message"></div>
+    </div>
+
+    <script src="rfid-manager.js"></script>
+</body>
+</html>
