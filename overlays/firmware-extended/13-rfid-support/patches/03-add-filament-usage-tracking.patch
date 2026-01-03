@@ -1,0 +1,58 @@
+diff -uNr rootfs.original/home/lava/klipper/klippy/extras/filament_protocol.py rootfs/home/lava/klipper/klippy/extras/filament_protocol.py
+--- rootfs.original/home/lava/klipper/klippy/extras/filament_protocol.py	2025-11-06 05:01:19.000000000 +0100
++++ rootfs/home/lava/klipper/klippy/extras/filament_protocol.py	2026-01-03 12:00:00.000000000 +0100
+@@ -1,5 +1,6 @@
+ import copy
++import struct
+ from cryptography.hazmat.primitives import hashes, serialization
+ from cryptography.hazmat.primitives.asymmetric import padding
+ from cryptography.hazmat.backends import default_backend
+ from cryptography.exceptions import InvalidSignature
+@@ -34,6 +35,10 @@
+     'RSA_KEY_VERSION': 0,
+     'OFFICIAL': False,
+     'CARD_UID': 0,
++    'DENSITY': 0.0,          # g/cm³ - filament density
++    'FULL_WEIGHT': 0,        # grams - initial spool weight
++    'CURRENT_WEIGHT': 0,     # grams - estimated remaining weight
++    'CUMULATIVE_USAGE': 0,   # grams - total filament used from this spool
+ }
+
+ # Filament main type
+@@ -135,6 +140,12 @@
+ M1_PROTO_RSA_KEY_VER_POS                        = (2 * 64 + 2 * 16 + 8)
+ M1_PROTO_RSA_KEY_VER_LEN                        = 2
+
++# Section 3 - Filament usage tracking
++M1_PROTO_DENSITY_POS                            = (3 * 64 + 0 * 16 + 0)
++M1_PROTO_FULL_WEIGHT_POS                        = (3 * 64 + 0 * 16 + 4)
++M1_PROTO_CURRENT_WEIGHT_POS                     = (3 * 64 + 0 * 16 + 8)
++M1_PROTO_CUMULATIVE_USAGE_POS                   = (3 * 64 + 0 * 16 + 12)
++
+ # ERROR CODE
+ FILAMENT_PROTO_OK                               = 0
+ FILAMENT_PROTO_ERR                              = -1
+@@ -420,6 +431,22 @@
+
+     info['CARD_UID'] = data_buf[M1_PROTO_UID_POS : M1_PROTO_UID_POS + M1_PROTO_UID_LEN]
+
++    # Filament usage tracking fields from Sector 3
++    # Density (float32, IEEE 754)
++    tmp = bytes(data_buf[M1_PROTO_DENSITY_POS : M1_PROTO_DENSITY_POS + 4])
++    info['DENSITY'] = struct.unpack('<f', tmp)[0] if tmp != b'\x00\x00\x00\x00' else 0.0
++
++    # Full weight (uint32, little-endian)
++    tmp = data_buf[M1_PROTO_FULL_WEIGHT_POS : M1_PROTO_FULL_WEIGHT_POS + 4]
++    info['FULL_WEIGHT'] = (tmp[3] << 24) | (tmp[2] << 16) | (tmp[1] << 8) | tmp[0]
++
++    # Current weight (uint32, little-endian)
++    tmp = data_buf[M1_PROTO_CURRENT_WEIGHT_POS : M1_PROTO_CURRENT_WEIGHT_POS + 4]
++    info['CURRENT_WEIGHT'] = (tmp[3] << 24) | (tmp[2] << 16) | (tmp[1] << 8) | tmp[0]
++
++    # Cumulative usage (uint32, little-endian)
++    tmp = data_buf[M1_PROTO_CUMULATIVE_USAGE_POS : M1_PROTO_CUMULATIVE_USAGE_POS + 4]
++    info['CUMULATIVE_USAGE'] = (tmp[3] << 24) | (tmp[2] << 16) | (tmp[1] << 8) | tmp[0]
++
+     info['OFFICIAL'] = True
+
+     return FILAMENT_PROTO_OK, info

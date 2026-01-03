@@ -126,6 +126,17 @@ def ndef_parse(data_buf):
         logging.exception("NDEF parsing failed: %s", str(e))
         return NDEF_ERR, []
 
+def _get_default_density(material_type):
+    """Get default density for common filament types in g/cm³."""
+    density_map = {
+        'PLA': 1.24,
+        'PETG': 1.27,
+        'ABS': 1.04,
+        'TPU': 1.21,
+        'PVA': 1.19,
+    }
+    return density_map.get(material_type.upper(), 1.24)  # Default to PLA
+
 def openspool_parse_payload(payload):
     if None == payload or not isinstance(payload, (bytes, bytearray)):
         logging.error("OpenSpool payload parsing failed: Invalid payload parameter")
@@ -172,11 +183,18 @@ def openspool_parse_payload(payload):
         info['RGB_5'] = 0
         info['ARGB_COLOR'] = info['ALPHA'] << 24 | info['RGB_1']
 
-        info['DIAMETER'] = 175
+        # Diameter: tag-specific value overrides default
+        info['DIAMETER'] = int(data.get('diameter', 1.75) * 100)  # Convert mm to 1/100mm units
         info['WEIGHT'] = 0
         info['LENGTH'] = 0
         info['DRYING_TEMP'] = 0
         info['DRYING_TIME'] = 0
+
+        # Filament usage tracking fields
+        info['DENSITY'] = float(data.get('density', _get_default_density(info['MAIN_TYPE'])))
+        info['FULL_WEIGHT'] = int(data.get('full_weight', 0))
+        info['CURRENT_WEIGHT'] = int(data.get('current_weight', info['FULL_WEIGHT']))
+        info['CUMULATIVE_USAGE'] = int(data.get('cumulative_usage', 0))
 
         try:
             min_temp = int(data.get('min_temp', 0))
