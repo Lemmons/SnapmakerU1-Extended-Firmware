@@ -64,7 +64,9 @@ class FilamentUsageTracker:
             logging.info("Print complete, filament used: %.2f mm", filament_used_mm)
 
             # Update each channel that has filament loaded
-            for channel in [0, 1]:
+            # Query the number of channels from filament_detect
+            channel_count = getattr(self.filament_detect, '_channel_nums', 4)
+            for channel in range(channel_count):
                 self._update_channel(channel, filament_used_mm, eventtime)
 
         except Exception as e:
@@ -74,9 +76,9 @@ class FilamentUsageTracker:
         """Update filament weight for a specific channel."""
         try:
             # Get filament info for this channel
-            filament_info = self.filament_detect.request_read_filament_info(channel)
+            error, filament_info = self.filament_detect.get_a_filament_info(channel)
 
-            if not filament_info:
+            if error != 0 or not filament_info:
                 logging.debug("No filament info for channel %d, skipping", channel)
                 return
 
@@ -144,10 +146,12 @@ class FilamentUsageTracker:
         try:
             eventtime = self.reactor.monotonic()
 
-            for channel in [0, 1]:
-                filament_info = self.filament_detect.request_read_filament_info(channel)
+            # Query the number of channels from filament_detect
+            channel_count = getattr(self.filament_detect, '_channel_nums', 4)
+            for channel in range(channel_count):
+                error, filament_info = self.filament_detect.get_a_filament_info(channel)
 
-                if not filament_info:
+                if error != 0 or not filament_info or not filament_info.get('VENDOR'):
                     gcmd.respond_info(f"Channel {channel}: No filament detected")
                     continue
 

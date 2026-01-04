@@ -2,13 +2,14 @@
 # Patch workflow helper - assists in creating sequential patches for overlays
 #
 # This script helps manage the complexity of creating patches that build on top of
-# previous patches by maintaining incremental states.
+# previous patches by maintaining a single working directory with all patches applied.
 
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORK_DIR="$ROOT_DIR/tmp/patch-work"
+TEMP_DIR="$ROOT_DIR/tmp/patch-work-temp"
 FIRMWARE_DIR="$ROOT_DIR/tmp/extracted"
 
 show_help() {
@@ -20,35 +21,31 @@ Usage: $0 <command> [args]
 Commands:
   init <overlay-name>
       Initialize a patch workspace for an overlay.
-      Extracts the original rootfs and creates a baseline.
-
-  apply-all <overlay-name>
-      Apply all existing patches from the overlay in order to create
-      the current state. Use this before creating a new patch.
+      Extracts rootfs and applies all existing patches.
+      Warns if workspace already exists.
 
   save <overlay-name> <patch-name> <files...>
       Save a new patch with changes to the specified files.
       Example: save rfid-support 06-add-feature home/lava/klipper/klippy/extras/file.py
 
-  diff <overlay-name> <files...>
+  diff <overlay-name> [files...]
       Show diff of current changes without saving.
-
-  reset <overlay-name>
-      Reset the workspace to the state after applying all existing patches.
-
-  clean
-      Remove the entire patch workspace.
 
   status <overlay-name>
       Show what files have been modified in the current workspace.
 
+  reset <overlay-name>
+      Reset the workspace by reapplying all patches (no confirmation).
+
+  clean
+      Remove the entire patch workspace (prompts for confirmation).
+
 Examples:
   # Start working on a new patch for an existing overlay
   $0 init firmware-extended/13-rfid-support
-  $0 apply-all firmware-extended/13-rfid-support
 
   # Edit files directly in the workspace
-  vim tmp/patch-work/current/home/lava/klipper/klippy/extras/filament_detect.py
+  vim tmp/patch-work/home/lava/klipper/klippy/extras/filament_detect.py
 
   # Check what changed
   $0 status firmware-extended/13-rfid-support
@@ -58,6 +55,51 @@ Examples:
   $0 save firmware-extended/13-rfid-support 06-my-new-feature home/lava/klipper/klippy/extras/filament_detect.py
 
 EOF
+}
+
+# Shared function to extract and apply patches
+# Args: $1 = target directory, $2 = overlay name
+extract_and_apply_patches() {
+  local target_dir="$1"
+  local overlay_name="$2"
+
+  # Extract rootfs
+  rm -rf "$target_dir"
+  unsquashfs -d "$target_dir" "$FIRMWARE_DIR/rk-unpacked/rootfs.img" > /dev/null 2>&1
+
+  # Run pre-scripts if they exist
+  local overlay_dir="$ROOT_DIR/overlays/$overlay_name"
+  if [[ -d "$overlay_dir/pre-scripts" ]]; then
+    for scriptfile in "$overlay_dir/pre-scripts/"*.sh; do
+      if [[ -f "$scriptfile" ]]; then
+        bash "$scriptfile" "$target_dir" > /dev/null 2>&1
+      fi
+    done
+  fi
+
+  # Apply patches in alphabetical order
+  local patch_dir="$ROOT_DIR/overlays/$overlay_name/patches"
+  if [[ -d "$patch_dir" ]]; then
+    for patch_file in "$patch_dir"/*.patch; do
+      if [[ ! -f "$patch_file" ]]; then
+        continue
+      fi
+
+      # Apply patch directly to the target directory
+      # -p1 strips the first directory component (rootfs.original/ -> home/...)
+      set +e
+      cd "$target_dir"
+      patch -p1 < "$patch_file" 2>&1 | grep -v "patching file" || true
+      patch_result=$?
+      cd - > /dev/null
+      set -e
+
+      if [[ $patch_result -ne 0 ]]; then
+        echo "Error: Failed to apply patch $(basename "$patch_file")"
+        exit 1
+      fi
+    done
+  fi
 }
 
 init_workspace() {
@@ -74,139 +116,35 @@ init_workspace() {
     exit 1
   fi
 
-  echo ">> Initializing patch workspace for $overlay_name..."
-
-  # Create workspace directories
-  mkdir -p "$WORK_DIR"
-
   # Check if we have the extracted firmware
   if [[ ! -d "$FIRMWARE_DIR/rk-unpacked" ]]; then
     echo "Error: No extracted firmware found at tmp/extracted/"
-    echo "Please run 'make extract' first to extract the base firmware"
+    echo "Please run 'make extract' or 'make build PROFILE=<profile>' first"
     exit 1
   fi
 
-  # Extract original baseline (if not already done)
-  if [[ ! -d "$WORK_DIR/original" ]]; then
-    echo ">> Extracting original rootfs..."
-    unsquashfs -d "$WORK_DIR/original" "$FIRMWARE_DIR/rk-unpacked/rootfs.img"
+  # Warn if workspace exists
+  if [[ -d "$WORK_DIR" ]]; then
+    echo "Warning: Workspace already exists at $WORK_DIR"
+    read -p "Recreate workspace? This will discard any unsaved changes. (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      echo "Aborted."
+      exit 0
+    fi
   fi
 
-  # Extract current working copy
-  echo ">> Creating working copy..."
-  rm -rf "$WORK_DIR/current"
-  unsquashfs -d "$WORK_DIR/current" "$FIRMWARE_DIR/rk-unpacked/rootfs.img"
+  echo ">> Initializing patch workspace for $overlay_name..."
+
+  # Extract and apply all patches
+  extract_and_apply_patches "$WORK_DIR" "$overlay_name"
 
   # Save overlay name
   echo "$overlay_name" > "$WORK_DIR/.overlay"
 
   echo ">> Workspace initialized at $WORK_DIR"
-  echo "   Original: $WORK_DIR/original"
-  echo "   Working:  $WORK_DIR/current"
-}
-
-apply_all_patches() {
-  local overlay_name="$1"
-
-  if [[ -z "$overlay_name" ]]; then
-    if [[ -f "$WORK_DIR/.overlay" ]]; then
-      overlay_name=$(cat "$WORK_DIR/.overlay")
-    else
-      echo "Error: overlay name required"
-      exit 1
-    fi
-  fi
-
-  local patch_dir="$ROOT_DIR/overlays/$overlay_name/patches"
-
-  if [[ ! -d "$patch_dir" ]]; then
-    echo "No patches directory found for $overlay_name"
-    return
-  fi
-
-  echo ">> Applying all patches from $overlay_name..."
-
-  # Reset to clean state first
-  echo "   Resetting to clean baseline..."
-  rm -rf "$WORK_DIR/current"
-  unsquashfs -d "$WORK_DIR/current" "$FIRMWARE_DIR/rk-unpacked/rootfs.img"
-
-  # Run pre-scripts if they exist
-  local overlay_dir="$ROOT_DIR/overlays/$overlay_name"
-  if [[ -d "$overlay_dir/pre-scripts" ]]; then
-    for scriptfile in "$overlay_dir/pre-scripts/"*.sh; do
-      if [[ -f "$scriptfile" ]]; then
-        echo "   Running pre-script: $(basename "$scriptfile")"
-        bash "$scriptfile" "$WORK_DIR/current"
-      fi
-    done
-  fi
-
-  # Apply patches in alphabetical order
-  local count=0
-  for patch_file in "$patch_dir"/*.patch; do
-    if [[ ! -f "$patch_file" ]]; then
-      continue
-    fi
-
-    echo "   Applying $(basename "$patch_file")..."
-
-    # Apply patch - convert rootfs.original to our paths
-    set +e
-    sed "s|rootfs\\.original/|original/|g; s|rootfs/|current/|g" "$patch_file" | \
-      patch -d "$WORK_DIR" -p0 2>&1
-    patch_result=$?
-    set -e
-
-    if [[ $patch_result -ne 0 ]]; then
-      echo "Error: Failed to apply patch $(basename "$patch_file") (exit code: $patch_result)"
-      echo "You may need to fix conflicts manually in $WORK_DIR/current"
-      exit 1
-    fi
-
-    count=$((count + 1))
-    echo "   ✓ Patch $(basename "$patch_file") applied successfully"
-  done
-
-  echo ">> Applied $count patches"
-  echo ">> You can now edit files in: $WORK_DIR/current"
-}
-
-show_status() {
-  local overlay_name="${1:-$(cat "$WORK_DIR/.overlay" 2>/dev/null)}"
-
-  if [[ ! -d "$WORK_DIR/current" ]]; then
-    echo "No workspace initialized. Run: $0 init <overlay-name>"
-    exit 1
-  fi
-
-  echo ">> Changed files in workspace:"
-  cd "$WORK_DIR"
-
-  # Find all different files
-  diff -qr original current | grep "Files.*differ" | sed 's|Files original/||; s| and current/.*||' || echo "   (no changes)"
-}
-
-show_diff() {
-  local overlay_name="${1:-$(cat "$WORK_DIR/.overlay" 2>/dev/null)}"
-  shift || true
-
-  if [[ ! -d "$WORK_DIR/current" ]]; then
-    echo "No workspace initialized. Run: $0 init <overlay-name>"
-    exit 1
-  fi
-
-  cd "$WORK_DIR"
-
-  if [[ $# -eq 0 ]]; then
-    # Show all diffs
-    diff -Nur original current || true
-  else
-    # Show diffs for specific files
-    for file in "$@"; do
-      diff -Nur "original/$file" "current/$file" || true
-    done
-  fi
+  echo ">> All existing patches have been applied"
+  echo ">> You can now edit files in: $WORK_DIR"
 }
 
 save_patch() {
@@ -226,56 +164,133 @@ save_patch() {
     exit 1
   fi
 
+  if [[ ! -d "$WORK_DIR" ]]; then
+    echo "Error: No workspace found. Run: $0 init <overlay-name>"
+    exit 1
+  fi
+
+  echo ">> Creating patch: $patch_name.patch"
+  echo ">> Extracting baseline with all patches applied..."
+
+  # Extract baseline and apply patches
+  extract_and_apply_patches "$TEMP_DIR" "$overlay_name"
+
   local patch_dir="$ROOT_DIR/overlays/$overlay_name/patches"
   mkdir -p "$patch_dir"
 
   local patch_file="$patch_dir/$patch_name.patch"
 
-  echo ">> Creating patch: $patch_name.patch"
-
-  cd "$WORK_DIR"
-
   # Generate the patch
   {
     for file in "$@"; do
-      if [[ -f "current/$file" ]] || [[ -f "original/$file" ]]; then
+      if [[ -f "$WORK_DIR/$file" ]] || [[ -f "$TEMP_DIR/$file" ]]; then
         echo "   Including: $file"
-        diff -Nur "original/$file" "current/$file" || true
+        diff -Nur "$TEMP_DIR/$file" "$WORK_DIR/$file" || true
       else
         echo "   Warning: File not found: $file"
       fi
     done
   } > "$patch_file"
 
-  # Replace our workspace paths with the standard patch paths
-  sed -i.bak "s|original/|rootfs.original/|g; s|current/|rootfs/|g" "$patch_file"
+  # Replace our paths with the standard patch paths
+  sed -i.bak "s|$TEMP_DIR/|rootfs.original/|g; s|$WORK_DIR/|rootfs/|g" "$patch_file"
   rm "$patch_file.bak"
+
+  # Clean up temp directory
+  rm -rf "$TEMP_DIR"
 
   echo ">> Patch saved to: $patch_file"
   echo ">> Lines in patch: $(wc -l < "$patch_file")"
+  echo ">> Done! You can continue editing in $WORK_DIR"
+}
 
-  # Now update the baseline for the next patch
-  echo ">> Updating baseline (original) to include this patch..."
-  for file in "$@"; do
-    if [[ -f "current/$file" ]]; then
-      mkdir -p "$(dirname "original/$file")"
-      cp "current/$file" "original/$file"
-    fi
-  done
+show_status() {
+  local overlay_name="${1:-$(cat "$WORK_DIR/.overlay" 2>/dev/null)}"
 
-  echo ">> Done! You can continue editing or run 'apply-all' to reset to all patches."
+  if [[ ! -d "$WORK_DIR" ]]; then
+    echo "No workspace initialized. Run: $0 init <overlay-name>"
+    exit 1
+  fi
+
+  echo ">> Creating baseline for comparison..."
+  extract_and_apply_patches "$TEMP_DIR" "$overlay_name"
+
+  echo ">> Changed files in workspace:"
+  diff -qr "$TEMP_DIR" "$WORK_DIR" 2>/dev/null | grep "Files.*differ" | sed "s|Files $TEMP_DIR/||; s| and $WORK_DIR/.*||" || echo "   (no changes)"
+
+  # Clean up temp directory
+  rm -rf "$TEMP_DIR"
+}
+
+show_diff() {
+  local overlay_name="${1:-$(cat "$WORK_DIR/.overlay" 2>/dev/null)}"
+  shift || true
+
+  if [[ ! -d "$WORK_DIR" ]]; then
+    echo "No workspace initialized. Run: $0 init <overlay-name>"
+    exit 1
+  fi
+
+  echo ">> Creating baseline for comparison..."
+  extract_and_apply_patches "$TEMP_DIR" "$overlay_name"
+
+  if [[ $# -eq 0 ]]; then
+    # Show all diffs
+    diff -Nur "$TEMP_DIR" "$WORK_DIR" 2>/dev/null || true
+  else
+    # Show diffs for specific files
+    for file in "$@"; do
+      diff -Nur "$TEMP_DIR/$file" "$WORK_DIR/$file" 2>/dev/null || true
+    done
+  fi
+
+  # Clean up temp directory
+  rm -rf "$TEMP_DIR"
 }
 
 reset_workspace() {
   local overlay_name="${1:-$(cat "$WORK_DIR/.overlay" 2>/dev/null)}"
 
-  echo ">> Resetting workspace..."
-  apply_all_patches "$overlay_name"
+  if [[ -z "$overlay_name" ]]; then
+    echo "Error: overlay name required or workspace not initialized"
+    exit 1
+  fi
+
+  echo ">> Resetting workspace (no confirmation)..."
+
+  # Check if we have the extracted firmware
+  if [[ ! -d "$FIRMWARE_DIR/rk-unpacked" ]]; then
+    echo "Error: No extracted firmware found at tmp/extracted/"
+    echo "Please run 'make extract' or 'make build PROFILE=<profile>' first"
+    exit 1
+  fi
+
+  # Extract and apply all patches
+  extract_and_apply_patches "$WORK_DIR" "$overlay_name"
+
+  # Save overlay name
+  echo "$overlay_name" > "$WORK_DIR/.overlay"
+
+  echo ">> Workspace reset complete"
+  echo ">> All existing patches have been reapplied"
 }
 
 clean_workspace() {
+  if [[ ! -d "$WORK_DIR" ]] && [[ ! -d "$TEMP_DIR" ]]; then
+    echo "No workspace to clean."
+    exit 0
+  fi
+
+  read -p "Remove patch workspace? This will discard any unsaved changes. (y/N): " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    exit 0
+  fi
+
   echo ">> Cleaning patch workspace..."
   rm -rf "$WORK_DIR"
+  rm -rf "$TEMP_DIR"
   echo ">> Done"
 }
 
@@ -283,9 +298,6 @@ clean_workspace() {
 case "${1:-help}" in
   init)
     init_workspace "$2"
-    ;;
-  apply-all)
-    apply_all_patches "$2"
     ;;
   save)
     shift

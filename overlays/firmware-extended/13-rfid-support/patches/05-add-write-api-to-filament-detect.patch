@@ -1,15 +1,50 @@
---- rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py	2025-12-14 17:32:55.000000000 +0000
-+++ rootfs/home/lava/klipper/klippy/extras/filament_detect.py	2026-01-03 19:34:46.628468612 +0000
-@@ -291,7 +291,93 @@
-         if not ret:
-             logging.error("save filament_detect config failed!")
-         return ret
+   Including: home/lava/klipper/klippy/extras/filament_detect.py
+--- rootfs.original/home/lava/klipper/klippy/extras/filament_detect.py	2026-01-04 22:17:34.661970293 +0000
++++ rootfs/home/lava/klipper/klippy/extras/filament_detect.py	2026-01-04 22:16:57.486917337 +0000
+@@ -112,6 +112,7 @@
+     def _fm175xx_card_info_deal_callback(self, channel, operation, result, card_type, card_data):
+         filament_info = None
+         is_clear = False
++        detected_card_type = None
+ 
+         if channel < 0 or channel >= self._channel_nums:
+             return
+@@ -123,6 +124,7 @@
+                 if (error == filament_protocol.FILAMENT_PROTO_OK):
+                     logging.info("channel[%d] m1 parse ok....", channel)
+                     filament_info = info
++                    detected_card_type = card_type
+                 else:
+                     logging.info("channel[%d] m1 parse err....", channel)
+             elif fm175xx_reader.FM175XX_MIFARE_CARD_TYPE_NTAG == card_type and fm175xx_reader.FM175XX_OK == result:
+@@ -131,6 +133,7 @@
+                 if (error == filament_protocol.FILAMENT_PROTO_OK):
+                     logging.info("channel[%d] NDEF parse ok....", channel)
+                     filament_info = info
++                    detected_card_type = card_type
+                 else:
+                     logging.info("channel[%d] NDEF parse err....", channel)
+         else:
+@@ -141,6 +144,10 @@
+         else:
+             self._self_test_success_cnt += 1
+ 
++        # Store card type in the info dict for later use
++        if detected_card_type is not None:
++            filament_info['CARD_TYPE'] = detected_card_type
 +
+         self._state[channel] = FILAMENT_DT_STATE_IDLE
+         self._filament_info_update(channel, filament_info, is_clear)
+ 
+@@ -279,6 +286,105 @@
+             if not ret:
+                 raise gcmd.error("save startup stay failed!")
+ 
 +    def request_update_filament_weight(self, channel, density, full_weight, current_weight, cumulative_usage=0):
 +        """Update filament usage tracking fields on RFID tag.
 +
 +        Args:
-+            channel: Filament channel (0 or 1)
++            channel: Filament channel (0-3 for 4 channel system)
 +            density: Filament density in g/cm³
 +            full_weight: Initial spool weight in grams
 +            current_weight: Current estimated weight in grams
@@ -18,17 +53,26 @@
 +        Returns:
 +            True if write succeeded, False otherwise
 +        """
-+        if channel not in [0, 1]:
-+            logging.error("Invalid channel %d for weight update", channel)
++        if channel < 0 or channel >= self._channel_nums:
++            logging.error("Invalid channel %d for weight update (valid range: 0-%d)", channel, self._channel_nums - 1)
 +            return False
 +
-+        # Get current filament info
-+        if channel not in self._filament_info_ret or not self._filament_info_ret[channel]:
++        # Get current filament info from the stored list
++        info = self._filament_info[channel]
++
++        # Check if we have valid filament data
++        if not info or not info.get('VENDOR'):
 +            logging.error("No filament info available for channel %d", channel)
 +            return False
 +
-+        info = self._filament_info_ret[channel]
-+        card_type = self._card_type[channel]
++        # Get card type - should have been stored when card was read
++        card_type = info.get('CARD_TYPE')
++        if card_type is None:
++            logging.error("Card type unknown for channel %d - tag may need to be re-read", channel)
++            return False
++
++        # Create a copy to avoid modifying the original until write succeeds
++        info = copy.deepcopy(info)
 +
 +        # Update info dict with new values
 +        info['DENSITY'] = density
@@ -50,12 +94,14 @@
 +
 +            # Activate and write to NTAG
 +            for retry in range(retry_times):
-+                ret = self.filament_dt_obj._Fm175xxReader__reader_a_ntag215_write_user_data(ndef_data)
++                ret = self._fm175xx_reader._Fm175xxReader__reader_a_ntag215_write_user_data(ndef_data)
 +                if ret == fm175xx_reader.FM175XX_OK:
 +                    logging.info("NTAG weight update successful on channel %d", channel)
++                    # Update stored info on success
++                    self._filament_info[channel] = info
 +                    return True
 +                logging.warning("NTAG write retry %d/%d failed for channel %d", retry + 1, retry_times, channel)
- 
++
 +            logging.error("NTAG weight update failed after %d retries on channel %d", retry_times, channel)
 +            return False
 +
@@ -75,13 +121,15 @@
 +                return False
 +
 +            for retry in range(retry_times):
-+                ret = self.filament_dt_obj._Fm175xxReader__reader_a_m1_write_sector_data(
++                ret = self._fm175xx_reader._Fm175xxReader__reader_a_m1_write_sector_data(
 +                    3, 0, block_data, uid,
 +                    fm175xx_reader.FM175XX_M1_CARD_AUTH_MODE_A,
-+                    self.filament_dt_obj._hkdf_key_a
++                    self._fm175xx_reader._hkdf_key_a
 +                )
 +                if ret == fm175xx_reader.FM175XX_OK:
 +                    logging.info("M1 weight update successful on channel %d", channel)
++                    # Update stored info on success
++                    self._filament_info[channel] = info
 +                    return True
 +                logging.warning("M1 write retry %d/%d failed for channel %d", retry + 1, retry_times, channel)
 +
@@ -91,6 +139,6 @@
 +        logging.error("Unsupported card type %d for channel %d", card_type, channel)
 +        return False
 +
- def load_config(config):
-     return FilamentDetector(config)
- 
+     def get_status(self, eventtime=None):
+         return {
+             'info': copy.deepcopy(self._filament_info),
