@@ -4,6 +4,10 @@
 >
 > Custom firmware is intended for users with appropriate technical knowledge. Ensure you understand the implications before proceeding.
 
+## Upgrading to v1.1.0
+
+The configuration file has been renamed from `extended.cfg` to `extended2.cfg`. During the first boot after upgrading a new `extended2.cfg` will be created with default settings. You will need to migrate your custom settings from `extended.cfg` to `extended2.cfg` manually or use `http://IP/firmware-config`.
+
 ## Install
 
 For detailed installation instructions, see the [Installation Guide](docs/install.md).
@@ -13,6 +17,10 @@ Quick steps:
 1. Download `.bin` and put on FAT32 formatted USB device
 2. On the printer go to `Settings` > `About` > `Firmware Version` > `Local Update`
 3. Select `.bin` and confirm.
+
+## Troubleshooting
+
+- **Klipper failed to start**: Open Firmware Config at `http://IP/firmware-config`, go to `Recovery` and select `Reset Extended to Defaults`. This will reset all extended settings and reboot the printer.
 
 ## Revert
 
@@ -33,3 +41,4 @@ If you find this project useful and would like to support its development, you c
 
   * EU store: [https://snapmaker-eu.myshopify.com?ref=paxx12](https://snapmaker-eu.myshopify.com?ref=paxx12)
   * US store: [https://snapmaker-us.myshopify.com?ref=paxx12](https://snapmaker-us.myshopify.com?ref=paxx12)
+  * Global store: [https://test-snapmaker.myshopify.com?ref=paxx12](https://test-snapmaker.myshopify.com?ref=paxx12)

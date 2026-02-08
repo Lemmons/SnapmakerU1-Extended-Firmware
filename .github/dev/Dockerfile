@@ -1,5 +1,7 @@
 FROM debian:trixie
 
+# The ccache is installed separately
+# as otherwise not all symlinks are created
 RUN apt-get update -y && \
     apt-get install -y \
       build-essential \
@@ -13,6 +15,7 @@ RUN apt-get update -y && \
       libssl-dev \
       dos2unix \
       sudo \
+      sshpass \
       unzip \
       wget \
       g++-aarch64-linux-gnu \
@@ -21,8 +24,12 @@ RUN apt-get update -y && \
       golang-go \
       ffmpeg \
       u-boot-tools \
+    && apt-get -y install ccache \
     && git config --global --add safe.directory '*' \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/lib/ccache:${PATH}"
+ENV CCACHE_MAXSIZE="512M"
 
 RUN dpkg --add-architecture arm64 && \
     apt-get update -y && \

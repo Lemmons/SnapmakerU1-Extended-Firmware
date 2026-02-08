@@ -1,0 +1,62 @@
+actions:
+  troubleshooting:
+    label: Troubleshooting
+    items:
+      show-status:
+        label: Show MCUs Version
+        cmd:
+          - /home/lava/bin/systemUpgrade.sh
+          - show-status
+        background: false
+        message: "System status:"
+
+      collect-logs:
+        label: Collect System Logs
+        confirm: "Collecting system logs might take a few minutes. Do not close the window until done. Continue?"
+        cmd:
+          - /home/lava/bin/sysinfoCollection.sh
+          - "no"
+          - /userdata/logs.tar.gz
+        message: "Collecting system logs..."
+        download_file: /userdata/logs.tar.gz
+
+  recovery:
+    label: Recovery
+    items:
+      reset-extended-to-defaults:
+        label: Reset Extended to Defaults
+        confirm: "Reset all extended settings to defaults and reboot?"
+        background: true
+        cmd:
+          - /bin/bash
+          - -xc
+          - |
+            rm -f /oem/.printer_data /oem/.debug &&
+            touch /oem/.extended-recover &&
+            /sbin/reboot
+        message: "Resetting extended to defaults..."
+
+      reset-to-backup-firmware:
+        label: Reset Extended to Backup Firmware
+        confirm: "Reset all extended settings to defaults, switch to backup firmware and reboot?"
+        background: true
+        cmd:
+          - /bin/bash
+          - -xc
+          - |
+            rm -f /oem/.printer_data /oem/.debug &&
+            touch /oem/.extended-recover &&
+            updateEngine --misc=other --reboot
+        message: "Resetting to backup firmware..."
+
+      switch-to-backup-firmware:
+        label: Switch to Backup Firmware
+        confirm: "Switch to backup firmware and reboot?"
+        background: true
+        cmd:
+          - /bin/bash
+          - -xc
+          - |
+            rm -f /oem/.printer_data /oem/.debug &&
+            updateEngine --misc=other --reboot
+        message: "Switching to backup firmware..."
