@@ -156,6 +156,201 @@
         </div>
     </dialog>
 
+    <!-- Export Tag Modal -->
+    <dialog id="export-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="export-modal-title">Export Tag - Extruder 1</h2>
+                <button class="modal-close" type="button" aria-label="Close">&times;</button>
+            </div>
+
+            <!-- Tab bar -->
+            <div class="import-tab-bar">
+                <button class="export-tab-btn active" data-tab="json">To JSON File</button>
+                <button class="export-tab-btn" data-tab="spoolman">To Spoolman</button>
+            </div>
+
+            <!-- Tab 1: JSON File -->
+            <div class="export-tab-content" id="export-tab-json">
+                <div class="import-json-body">
+                    <p>Download the tag data as an OpenSpool-format JSON file.</p>
+                    <div class="modal-footer" style="border-top: none; padding-top: 10px;">
+                        <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+                        <button type="button" class="btn btn-info" id="export-json-btn">Download JSON</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab 2: To Spoolman -->
+            <div class="export-tab-content hidden" id="export-tab-spoolman">
+
+                <!-- Unavailable notice -->
+                <div id="export-sm-unavailable" class="sm-unavailable hidden">
+                    Spoolman is not configured or unavailable. Configure Spoolman in <code>moonraker.conf</code> to use this feature.
+                </div>
+
+                <!-- Main content (hidden when unavailable) -->
+                <div id="export-sm-content" class="hidden">
+                    <p class="import-json-body" style="padding-bottom: 0;">
+                        Select an existing filament to use for the new spool, or create a new one based on the tag data.
+                    </p>
+
+                    <!-- Filament filter bar -->
+                    <div class="spoolman-filters">
+                        <label>Material:
+                            <select id="export-sm-filter-material">
+                                <option value="">All</option>
+                                <option value="PLA">PLA</option>
+                                <option value="PETG">PETG</option>
+                                <option value="ABS">ABS</option>
+                                <option value="TPU">TPU</option>
+                                <option value="PVA">PVA</option>
+                                <option value="NYLON">NYLON</option>
+                                <option value="ASA">ASA</option>
+                                <option value="PC">PC</option>
+                            </select>
+                        </label>
+                        <label>Brand:
+                            <input type="text" id="export-sm-filter-brand" placeholder="Any">
+                        </label>
+                        <button class="btn btn-primary btn-sm" id="export-sm-search-btn">Search</button>
+                    </div>
+
+                    <!-- Filament list -->
+                    <div id="export-sm-filament-list" class="sm-spool-list">
+                        <!-- Populated dynamically -->
+                    </div>
+
+                    <!-- "Create new filament from tag data" option -->
+                    <div class="export-sm-create-row">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="export-sm-create-new">
+                            Create new filament from tag data instead
+                        </label>
+                    </div>
+
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+                        <button type="button" class="btn btn-spoolman" id="export-spoolman-btn" disabled>Create Spool &amp; Export</button>
+                    </div>
+                </div>
+
+                <!-- Loading state -->
+                <div id="export-sm-loading" class="sm-loading" style="padding: 30px;">Checking Spoolman...</div>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Import Tag Modal -->
+    <dialog id="import-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="import-modal-title">Import Tag - Extruder 1</h2>
+                <button class="modal-close" type="button" aria-label="Close">&times;</button>
+            </div>
+
+            <!-- Tab bar -->
+            <div class="import-tab-bar">
+                <button class="import-tab-btn active" data-tab="json">From JSON File</button>
+                <button class="import-tab-btn" data-tab="spoolman">From Spoolman</button>
+            </div>
+
+            <!-- Tab 1: JSON File -->
+            <div class="import-tab-content" id="import-tab-json">
+                <div class="import-json-body">
+                    <p>Select an OpenSpool-format JSON file to import filament data into the tag write form.</p>
+                    <div class="modal-footer" style="border-top: none; padding-top: 10px;">
+                        <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+                        <button type="button" class="btn btn-info" id="import-json-pick-btn">Choose JSON File...</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab 2: From Spoolman -->
+            <div class="import-tab-content hidden" id="import-tab-spoolman">
+
+                <!-- Sub-tab bar -->
+                <div class="spoolman-subtab-bar">
+                    <button class="spoolman-subtab-btn active" data-subtab="spool">Import Spool</button>
+                    <button class="spoolman-subtab-btn" data-subtab="filament">Create from Filament</button>
+                </div>
+
+                <!-- Sub-tab A: Browse Spools -->
+                <div class="spoolman-subtab-content" id="spoolman-subtab-spool">
+                    <div class="spoolman-filters">
+                        <label>Material:
+                            <select id="sm-filter-material">
+                                <option value="">All</option>
+                                <option value="PLA">PLA</option>
+                                <option value="PETG">PETG</option>
+                                <option value="ABS">ABS</option>
+                                <option value="TPU">TPU</option>
+                                <option value="PVA">PVA</option>
+                                <option value="NYLON">NYLON</option>
+                                <option value="ASA">ASA</option>
+                                <option value="PC">PC</option>
+                            </select>
+                        </label>
+                        <label>Brand:
+                            <input type="text" id="sm-filter-brand" placeholder="Any">
+                        </label>
+                        <button class="btn btn-primary btn-sm" id="sm-search-btn">Search</button>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="sm-show-archived"> Show archived
+                        </label>
+                    </div>
+                    <div id="sm-spool-list" class="sm-spool-list">
+                        <!-- Populated dynamically -->
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+                        <button type="button" class="btn btn-success" id="sm-import-spool-btn" disabled>Import Selected Spool</button>
+                    </div>
+                </div>
+
+                <!-- Sub-tab B: Create from Filament -->
+                <div class="spoolman-subtab-content hidden" id="spoolman-subtab-filament">
+                    <div class="spoolman-filters">
+                        <label>Material:
+                            <select id="sm-fil-filter-material">
+                                <option value="">All</option>
+                                <option value="PLA">PLA</option>
+                                <option value="PETG">PETG</option>
+                                <option value="ABS">ABS</option>
+                                <option value="TPU">TPU</option>
+                                <option value="PVA">PVA</option>
+                                <option value="NYLON">NYLON</option>
+                                <option value="ASA">ASA</option>
+                                <option value="PC">PC</option>
+                            </select>
+                        </label>
+                        <label>Brand:
+                            <input type="text" id="sm-fil-filter-brand" placeholder="Any">
+                        </label>
+                        <button class="btn btn-primary btn-sm" id="sm-fil-search-btn">Search</button>
+                    </div>
+                    <div id="sm-filament-list" class="sm-spool-list">
+                        <!-- Populated dynamically -->
+                    </div>
+                    <div class="sm-create-weight">
+                        <label>Initial Spool Weight (g):
+                            <input type="number" id="sm-new-spool-weight" min="1" max="10000" step="0.1" placeholder="e.g. 1000">
+                        </label>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+                        <button type="button" class="btn btn-success" id="sm-create-spool-btn" disabled>Create Spool &amp; Import</button>
+                    </div>
+                </div>
+
+                <!-- Spoolman unavailable notice -->
+                <div id="sm-unavailable-notice" class="sm-unavailable hidden">
+                    Spoolman is not configured or unavailable. Configure Spoolman in <code>moonraker.conf</code> to use this feature.
+                </div>
+            </div>
+        </div>
+    </dialog>
+
     <script src="lib/PrintTag-Web/ndef.js"></script>
     <script src="lib/PrintTag-Web/openspool.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@simonwep/pickr/dist/pickr.min.js"></script>

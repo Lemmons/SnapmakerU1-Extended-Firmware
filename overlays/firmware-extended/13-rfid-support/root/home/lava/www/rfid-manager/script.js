@@ -26,6 +26,16 @@ let subscribed = false; // Track if we've subscribed to filament_detect
 let initialized = false; // Track if page has been initialized
 let refreshing = false; // Track if refresh is in progress
 
+// Spoolman state
+let spoolmanAvailable = null;    // null=unchecked, true=available, false=unavailable
+let spoolmanCheckPromise = null; // deduplicates the availability check
+let spoolmanBaseUrl = null;      // direct Spoolman UI URL (e.g. http://host:7912), fetched from Moonraker config
+let selectedSpoolId = null;      // currently selected spool in import modal
+let selectedFilamentId = null;   // currently selected filament in import modal
+let importModalChannel = null;   // which channel the import modal is open for
+let exportModalChannel = null;   // which channel the export modal is open for
+let exportSelectedFilamentId = null; // filament selected in export modal
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     if (initialized) {
@@ -62,6 +72,10 @@ function initializeWebSocket() {
             url: window.location.href
         }).then(() => {
             wsReady = true;
+            // Invalidate Spoolman availability cache on reconnect
+            spoolmanAvailable = null;
+            spoolmanCheckPromise = null;
+            spoolmanBaseUrl = null;
             showStatus('Connected to Moonraker', 'success');
             refreshAllChannels();
         }).catch(err => {
@@ -160,6 +174,686 @@ async function queryPrinterObjects(objects) {
     } catch (error) {
         console.error('Failed to query printer objects:', error);
         throw error;
+    }
+}
+
+// ============================================================================
+// Spoolman API
+// ============================================================================
+
+function formatUidString(uidArray) {
+    if (!uidArray || !uidArray.length) return '';
+    return uidArray.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(':');
+}
+
+function normalizeUid(raw) {
+    if (!raw) return '';
+    // Strip whitespace and all surrounding quotes (including JSON-encoded ones like "\"...\""
+    let s = String(raw).trim();
+    // Strip outer JSON-encoded quotes (values stored as "\"04:...\""  in Spoolman extra fields)
+    while (s.startsWith('"') || s.startsWith("'")) s = s.slice(1);
+    while (s.endsWith('"') || s.endsWith("'")) s = s.slice(0, -1);
+    s = s.trim().toUpperCase();
+    if (!s) return '';
+    // Remove colons to get raw hex
+    const hex = s.replace(/:/g, '');
+    if (hex.length === 14 && /^[0-9A-F]+$/.test(hex)) {
+        // Re-insert colons: XX:XX:XX:XX:XX:XX:XX
+        return hex.match(/.{2}/g).join(':');
+    }
+    return s;
+}
+
+function findSpoolByUid(uid, spools) {
+    const normTarget = normalizeUid(uid);
+    if (!normTarget) return null;
+    return spools.find(spool => {
+        if (!spool.extra) return false;
+        // Support both uid1/uid2 and rfid_uid1/rfid_uid2 field names
+        const candidates = [
+            spool.extra.uid1, spool.extra.uid2,
+            spool.extra.rfid_uid1, spool.extra.rfid_uid2
+        ];
+        return candidates.some(v => v && normalizeUid(v) === normTarget);
+    }) || null;
+}
+
+async function spoolmanProxy(method, path, query = '', body = null) {
+    const reqBody = { request_method: method, path };
+    if (query) reqBody.query = query;
+    if (body !== null) reqBody.body = body;
+    const resp = await fetch('/server/spoolman/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reqBody)
+    });
+    if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`Spoolman error ${resp.status}: ${text}`);
+    }
+    // Moonraker wraps the Spoolman response in { result: ... }
+    const data = await resp.json();
+    return data.result !== undefined ? data.result : data;
+}
+
+async function fetchSpoolmanBaseUrl() {
+    // Fetch the direct Spoolman UI URL from Moonraker's parsed config.
+    // The [spoolman] section has a "server" option like "http://192.168.1.100:7912".
+    try {
+        const resp = await fetch('/server/config');
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        const server = data?.result?.config?.spoolman?.server;
+        return server || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+async function checkSpoolmanAvailable() {
+    if (spoolmanAvailable !== null) return spoolmanAvailable;
+    if (spoolmanCheckPromise) return spoolmanCheckPromise;
+
+    spoolmanCheckPromise = (async () => {
+        try {
+            await spoolmanProxy('GET', '/v1/health');
+            spoolmanAvailable = true;
+            // Also fetch the direct URL for spool links
+            if (!spoolmanBaseUrl) {
+                spoolmanBaseUrl = await fetchSpoolmanBaseUrl();
+            }
+        } catch (e) {
+            spoolmanAvailable = false;
+        }
+        return spoolmanAvailable;
+    })();
+    return spoolmanCheckPromise;
+}
+
+async function fetchSpools({ material = '', brand = '', allowArchived = false } = {}) {
+    const parts = [];
+    if (material) parts.push(`filament.material=${encodeURIComponent(material)}`);
+    if (brand) parts.push(`filament.vendor.name=${encodeURIComponent(brand)}`);
+    if (!allowArchived) parts.push('allow_archived=false');
+    const query = parts.join('&');
+    return spoolmanProxy('GET', '/v1/spool', query);
+}
+
+async function fetchFilaments({ material = '', brand = '' } = {}) {
+    const parts = [];
+    if (material) parts.push(`material=${encodeURIComponent(material)}`);
+    if (brand) parts.push(`vendor.name=${encodeURIComponent(brand)}`);
+    const query = parts.join('&');
+    return spoolmanProxy('GET', '/v1/filament', query);
+}
+
+async function patchSpoolUid(spoolId, uid, slot = 'rfid_uid1') {
+    return spoolmanProxy('PATCH', `/v1/spool/${spoolId}`, '', { extra: { [slot]: uid } });
+}
+
+async function createSpool(filamentId, initialWeight) {
+    const body = { filament_id: filamentId };
+    if (initialWeight) body.initial_weight = parseFloat(initialWeight);
+    return spoolmanProxy('POST', '/v1/spool', '', body);
+}
+
+function spoolToFilamentData(spool) {
+    const f = spool.filament || {};
+    return {
+        type: f.material || '',
+        brand: f.vendor?.name || 'Generic',
+        subtype: f.name || '',
+        color_hex: f.color_hex ? f.color_hex.replace(/^#/, '').toUpperCase() : null,
+        alpha: 0xFF,
+        diameter: f.diameter || 1.75,
+        density: f.density || null,
+        min_temp: f.min_temp || null,
+        max_temp: f.max_temp || null,
+        bed_min_temp: f.bed_temperature || null,
+        bed_max_temp: f.bed_temperature || null,
+        weight: spool.remaining_weight != null ? spool.remaining_weight : (f.weight || null)
+    };
+}
+
+function filamentToFilamentData(filament) {
+    return {
+        type: filament.material || '',
+        brand: filament.vendor?.name || 'Generic',
+        subtype: filament.name || '',
+        color_hex: filament.color_hex ? filament.color_hex.replace(/^#/, '').toUpperCase() : null,
+        alpha: 0xFF,
+        diameter: filament.diameter || 1.75,
+        density: filament.density || null,
+        min_temp: filament.min_temp || null,
+        max_temp: filament.max_temp || null,
+        bed_min_temp: filament.bed_temperature || null,
+        bed_max_temp: filament.bed_temperature || null,
+        weight: filament.weight || null
+    };
+}
+
+async function findOrCreateSpoolmanFilament(filamentData) {
+    // Search for an existing matching filament
+    const filaments = await fetchFilaments({
+        material: filamentData.type,
+        brand: filamentData.brand
+    });
+    const match = filaments.find(f =>
+        f.material === filamentData.type &&
+        (f.vendor?.name || 'Generic') === (filamentData.brand || 'Generic')
+    );
+    if (match) return match.id;
+
+    // Create a new filament
+    const body = {
+        name: filamentData.subtype || filamentData.type,
+        material: filamentData.type,
+        diameter: filamentData.diameter || 1.75,
+    };
+    if (filamentData.density) body.density = filamentData.density;
+    if (filamentData.min_temp) body.min_temp = filamentData.min_temp;
+    if (filamentData.max_temp) body.max_temp = filamentData.max_temp;
+    if (filamentData.bed_min_temp || filamentData.bed_max_temp) {
+        body.bed_temperature = filamentData.bed_min_temp || filamentData.bed_max_temp;
+    }
+    if (filamentData.color_hex) body.color_hex = filamentData.color_hex;
+    if (filamentData.weight) body.weight = filamentData.weight;
+    if (filamentData.brand && filamentData.brand !== 'Generic') {
+        // Try to find existing vendor first
+        const vendors = await spoolmanProxy('GET', '/v1/vendor', `name=${encodeURIComponent(filamentData.brand)}`);
+        if (vendors && vendors.length > 0) {
+            body.vendor_id = vendors[0].id;
+        }
+    }
+
+    const newFilament = await spoolmanProxy('POST', '/v1/filament', '', body);
+    return newFilament.id;
+}
+
+// ============================================================================
+// Spoolman Status Check
+// ============================================================================
+
+async function checkSpoolmanStatusForChannel(channel, badgeEl) {
+    try {
+        const available = await checkSpoolmanAvailable();
+        if (!available) {
+            badgeEl.textContent = 'Unavailable';
+            badgeEl.className = 'spoolman-status-badge spoolman-unavailable';
+            return;
+        }
+
+        const uidString = formatUidString(channel.uid);
+        if (!uidString) {
+            badgeEl.textContent = 'No UID';
+            badgeEl.className = 'spoolman-status-badge spoolman-unavailable';
+            return;
+        }
+
+        const spools = await fetchSpools({
+            material: channel.filament.type,
+            brand: channel.filament.brand
+        });
+
+        const matched = findSpoolByUid(uidString, spools);
+        if (matched) {
+            const weight = matched.remaining_weight != null
+                ? ` (${Math.round(matched.remaining_weight)}g remaining)` : '';
+            // Use direct Spoolman URL if available, otherwise fall back to Nginx proxy path
+            const spoolUrl = spoolmanBaseUrl
+                ? `${spoolmanBaseUrl}/spool/${matched.id}`
+                : `/spoolman/spool/${matched.id}`;
+            badgeEl.innerHTML = `<a href="${spoolUrl}" target="_blank" class="spoolman-link">Linked: Spool #${matched.id}${weight}</a>`;
+            badgeEl.className = 'spoolman-status-badge spoolman-linked';
+        } else {
+            badgeEl.textContent = 'Not linked';
+            badgeEl.className = 'spoolman-status-badge spoolman-not-linked';
+        }
+    } catch (e) {
+        console.error('Spoolman status check failed:', e);
+        badgeEl.textContent = 'Check failed';
+        badgeEl.className = 'spoolman-status-badge spoolman-error';
+    }
+}
+
+// ============================================================================
+// Export Modal
+// ============================================================================
+
+function openExportModal(channel) {
+    exportModalChannel = channel;
+    exportSelectedFilamentId = null;
+
+    const modal = document.getElementById('export-modal');
+    const title = document.getElementById('export-modal-title');
+    title.textContent = `Export Tag - Extruder ${channel.channel + 1}`;
+
+    // Reset to JSON tab
+    switchExportTab('json');
+
+    // Reset Spoolman tab state
+    document.getElementById('export-sm-unavailable').classList.add('hidden');
+    document.getElementById('export-sm-content').classList.add('hidden');
+    document.getElementById('export-sm-loading').classList.remove('hidden');
+    document.getElementById('export-spoolman-btn').disabled = true;
+    document.getElementById('export-sm-filament-list').innerHTML = '';
+    const createNew = document.getElementById('export-sm-create-new');
+    if (createNew) createNew.checked = false;
+
+    modal.showModal();
+}
+
+function switchExportTab(tabName) {
+    document.querySelectorAll('.export-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.export-tab-content').forEach(panel => {
+        panel.classList.toggle('hidden', !panel.id.endsWith(tabName));
+    });
+
+    if (tabName === 'spoolman') {
+        initExportSpoolmanTab();
+    }
+}
+
+async function initExportSpoolmanTab() {
+    document.getElementById('export-sm-loading').classList.remove('hidden');
+    document.getElementById('export-sm-unavailable').classList.add('hidden');
+    document.getElementById('export-sm-content').classList.add('hidden');
+
+    const available = await checkSpoolmanAvailable();
+    document.getElementById('export-sm-loading').classList.add('hidden');
+
+    if (!available) {
+        document.getElementById('export-sm-unavailable').classList.remove('hidden');
+        return;
+    }
+
+    document.getElementById('export-sm-content').classList.remove('hidden');
+
+    // Pre-fill filters from tag data and load
+    if (exportModalChannel) {
+        const f = exportModalChannel.filament;
+        const materialSel = document.getElementById('export-sm-filter-material');
+        const brandInput = document.getElementById('export-sm-filter-brand');
+        if (f.type && materialSel) materialSel.value = f.type;
+        if (f.brand && brandInput) brandInput.value = f.brand;
+    }
+    await loadExportFilamentList();
+}
+
+async function loadExportFilamentList() {
+    const listEl = document.getElementById('export-sm-filament-list');
+    listEl.innerHTML = '<div class="sm-loading">Loading filaments...</div>';
+    exportSelectedFilamentId = null;
+    document.getElementById('export-spoolman-btn').disabled = true;
+
+    const createNew = document.getElementById('export-sm-create-new');
+    if (createNew) createNew.checked = false;
+
+    const material = document.getElementById('export-sm-filter-material').value;
+    const brand = document.getElementById('export-sm-filter-brand').value.trim();
+
+    try {
+        const filaments = await fetchFilaments({ material, brand });
+        renderExportFilamentList(filaments);
+    } catch (e) {
+        listEl.innerHTML = `<div class="sm-error">Failed to load filaments: ${e.message}</div>`;
+    }
+}
+
+function renderExportFilamentList(filaments) {
+    const listEl = document.getElementById('export-sm-filament-list');
+    if (!filaments.length) {
+        listEl.innerHTML = '<div class="sm-empty">No matching filaments found. Use "Create new filament from tag data" below.</div>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    filaments.forEach(filament => {
+        const colorHex = filament.color_hex ? filament.color_hex.replace(/^#/, '') : 'CCCCCC';
+        const vendorName = filament.vendor?.name || 'Unknown';
+
+        const item = document.createElement('div');
+        item.className = 'sm-spool-item';
+        item.dataset.filamentId = filament.id;
+        item.innerHTML = `
+            <span class="color-swatch" style="background-color: #${colorHex}"></span>
+            <span class="sm-spool-name">${filament.name || 'Unnamed'}</span>
+            <span class="sm-spool-meta">${vendorName} · ${filament.material || '?'}</span>
+            <span class="sm-spool-id">#${filament.id}</span>
+        `;
+        item.addEventListener('click', () => selectExportFilament(filament.id, item));
+        listEl.appendChild(item);
+    });
+}
+
+function selectExportFilament(filamentId, itemEl) {
+    document.querySelectorAll('#export-sm-filament-list .sm-spool-item').forEach(el => el.classList.remove('selected'));
+    itemEl.classList.add('selected');
+    exportSelectedFilamentId = filamentId;
+    // Uncheck "create new" if a filament is explicitly selected
+    const createNew = document.getElementById('export-sm-create-new');
+    if (createNew) createNew.checked = false;
+    document.getElementById('export-spoolman-btn').disabled = false;
+}
+
+// ============================================================================
+// Export to Spoolman
+// ============================================================================
+
+async function exportTagToSpoolman(channel) {
+    const filament = channel.filament;
+    if (!filament.type) {
+        showStatus('No filament data to export', 'error');
+        return;
+    }
+
+    const createNew = document.getElementById('export-sm-create-new')?.checked;
+    let filamentId;
+
+    if (!createNew && exportSelectedFilamentId) {
+        filamentId = exportSelectedFilamentId;
+    } else {
+        // Create a new filament from tag data
+        showStatus('Creating filament in Spoolman...', 'info');
+        try {
+            filamentId = await findOrCreateSpoolmanFilament(filament);
+        } catch (e) {
+            console.error('Failed to create filament:', e);
+            showStatus(`Failed to create filament: ${e.message}`, 'error');
+            return;
+        }
+    }
+
+    showStatus('Creating spool in Spoolman...', 'info');
+
+    try {
+        const newSpool = await createSpool(filamentId, filament.weight);
+        const uidString = formatUidString(channel.uid);
+        if (uidString) {
+            await patchSpoolUid(newSpool.id, uidString, 'rfid_uid1');
+        }
+        showStatus(`Exported to Spoolman as spool #${newSpool.id}`, 'success');
+
+        // Refresh the card to show linked status
+        await refreshSingleChannel(channel.channel);
+    } catch (e) {
+        console.error('Export to Spoolman failed:', e);
+        showStatus(`Export to Spoolman failed: ${e.message}`, 'error');
+    }
+}
+
+// ============================================================================
+// Import Modal
+// ============================================================================
+
+function openImportModal(channel) {
+    importModalChannel = channel;
+    selectedSpoolId = null;
+    selectedFilamentId = null;
+
+    const modal = document.getElementById('import-modal');
+    const title = document.getElementById('import-modal-title');
+    title.textContent = `Import Tag - Extruder ${channel + 1}`;
+
+    // Reset to JSON tab
+    switchImportTab('json');
+
+    // Reset Spoolman UI state
+    document.getElementById('sm-spool-list').innerHTML = '';
+    document.getElementById('sm-filament-list').innerHTML = '';
+    document.getElementById('sm-import-spool-btn').disabled = true;
+    document.getElementById('sm-create-spool-btn').disabled = true;
+    document.getElementById('sm-unavailable-notice').classList.add('hidden');
+    document.getElementById('spoolman-subtab-spool').classList.remove('hidden');
+    document.getElementById('spoolman-subtab-filament').classList.add('hidden');
+    document.querySelector('.spoolman-subtab-bar').classList.remove('hidden');
+    document.querySelectorAll('.spoolman-subtab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.subtab === 'spool');
+    });
+
+    modal.showModal();
+}
+
+function switchImportTab(tabName) {
+    document.querySelectorAll('.import-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.import-tab-content').forEach(panel => {
+        panel.classList.toggle('hidden', !panel.id.endsWith(tabName));
+    });
+
+    if (tabName === 'spoolman') {
+        initSpoolmanTab();
+    }
+}
+
+function switchSpoolmanSubtab(subtabName) {
+    document.querySelectorAll('.spoolman-subtab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.subtab === subtabName);
+    });
+    document.getElementById('spoolman-subtab-spool').classList.toggle('hidden', subtabName !== 'spool');
+    document.getElementById('spoolman-subtab-filament').classList.toggle('hidden', subtabName !== 'filament');
+}
+
+async function initSpoolmanTab() {
+    const unavailableNotice = document.getElementById('sm-unavailable-notice');
+    const subtabBar = document.querySelector('.spoolman-subtab-bar');
+    const spoolSubtab = document.getElementById('spoolman-subtab-spool');
+    const filamentSubtab = document.getElementById('spoolman-subtab-filament');
+
+    const available = await checkSpoolmanAvailable();
+    if (!available) {
+        unavailableNotice.classList.remove('hidden');
+        subtabBar.classList.add('hidden');
+        spoolSubtab.classList.add('hidden');
+        filamentSubtab.classList.add('hidden');
+        return;
+    }
+
+    unavailableNotice.classList.add('hidden');
+    subtabBar.classList.remove('hidden');
+    spoolSubtab.classList.remove('hidden');
+    filamentSubtab.classList.add('hidden');
+
+    // Load spool list on first open
+    await loadSpoolList();
+}
+
+async function loadSpoolList() {
+    const listEl = document.getElementById('sm-spool-list');
+    listEl.innerHTML = '<div class="sm-loading">Loading spools...</div>';
+    selectedSpoolId = null;
+    document.getElementById('sm-import-spool-btn').disabled = true;
+
+    const material = document.getElementById('sm-filter-material').value;
+    const brand = document.getElementById('sm-filter-brand').value.trim();
+    const showArchived = document.getElementById('sm-show-archived').checked;
+
+    try {
+        const spools = await fetchSpools({ material, brand, allowArchived: showArchived });
+        const channelData = channelsData.find(c => c.channel === importModalChannel);
+        const tagUid = channelData ? formatUidString(channelData.uid) : null;
+        renderSpoolList(spools, tagUid);
+    } catch (e) {
+        listEl.innerHTML = `<div class="sm-error">Failed to load spools: ${e.message}</div>`;
+    }
+}
+
+function renderSpoolList(spools, currentTagUid) {
+    const listEl = document.getElementById('sm-spool-list');
+    if (!spools.length) {
+        listEl.innerHTML = '<div class="sm-empty">No spools found.</div>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    spools.forEach(spool => {
+        const f = spool.filament || {};
+        const colorHex = f.color_hex ? f.color_hex.replace(/^#/, '') : 'CCCCCC';
+        const isLinked = currentTagUid ? findSpoolByUid(currentTagUid, [spool]) : false;
+        const vendorName = f.vendor?.name || 'Unknown';
+        const weight = spool.remaining_weight != null
+            ? `${Math.round(spool.remaining_weight)}g left`
+            : (f.weight ? `${Math.round(f.weight)}g full` : '');
+
+        const item = document.createElement('div');
+        item.className = 'sm-spool-item';
+        item.dataset.spoolId = spool.id;
+        item.innerHTML = `
+            <span class="color-swatch" style="background-color: #${colorHex}"></span>
+            <span class="sm-spool-name">${f.name || 'Unnamed'}</span>
+            <span class="sm-spool-meta">${vendorName} · ${f.material || '?'}</span>
+            <span class="sm-spool-weight">${weight}</span>
+            ${isLinked ? '<span class="sm-linked-badge">Linked</span>' : ''}
+            <span class="sm-spool-id">#${spool.id}</span>
+        `;
+        item.addEventListener('click', () => selectSpool(spool.id, item));
+        listEl.appendChild(item);
+    });
+}
+
+function selectSpool(spoolId, itemEl) {
+    document.querySelectorAll('.sm-spool-item').forEach(el => el.classList.remove('selected'));
+    itemEl.classList.add('selected');
+    selectedSpoolId = spoolId;
+    document.getElementById('sm-import-spool-btn').disabled = false;
+}
+
+async function handleImportSelectedSpool() {
+    if (!selectedSpoolId) return;
+
+    const btn = document.getElementById('sm-import-spool-btn');
+    btn.disabled = true;
+    btn.textContent = 'Importing...';
+
+    try {
+        const spool = await spoolmanProxy('GET', `/v1/spool/${selectedSpoolId}`);
+
+        const channelData = channelsData.find(c => c.channel === importModalChannel);
+        const uidString = channelData ? formatUidString(channelData.uid) : null;
+
+        // Determine which UID slot to use (prefer rfid_uid1/rfid_uid2 field names)
+        if (uidString) {
+            let uidSlot = 'rfid_uid1';
+            const existing1 = spool.extra?.rfid_uid1 || spool.extra?.uid1 || '';
+            if (existing1 && normalizeUid(existing1) && normalizeUid(existing1) !== normalizeUid(uidString)) {
+                uidSlot = 'rfid_uid2';
+            }
+            try {
+                await patchSpoolUid(selectedSpoolId, uidString, uidSlot);
+            } catch (patchErr) {
+                console.warn('Failed to patch spool UID:', patchErr);
+                showStatus(`Spool data loaded but Spoolman link failed: ${patchErr.message}`, 'error');
+            }
+        }
+
+        document.getElementById('import-modal').close();
+        const ch = importModalChannel;
+        openWriteModal(ch, 'create');
+        setTimeout(() => {
+            populateWriteForm(spoolToFilamentData(spool));
+            document.getElementById('write-modal-title').textContent =
+                `Import from Spoolman #${selectedSpoolId} - Extruder ${ch + 1}`;
+        }, 50);
+
+        showStatus(`Spoolman spool #${selectedSpoolId} imported. Review and click Write Tag.`, 'success');
+    } catch (e) {
+        console.error('Failed to import spool:', e);
+        showStatus(`Failed to import spool: ${e.message}`, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Import Selected Spool';
+    }
+}
+
+async function loadFilamentList() {
+    const listEl = document.getElementById('sm-filament-list');
+    listEl.innerHTML = '<div class="sm-loading">Loading filaments...</div>';
+    selectedFilamentId = null;
+    document.getElementById('sm-create-spool-btn').disabled = true;
+
+    const material = document.getElementById('sm-fil-filter-material').value;
+    const brand = document.getElementById('sm-fil-filter-brand').value.trim();
+
+    try {
+        const filaments = await fetchFilaments({ material, brand });
+        renderFilamentList(filaments);
+    } catch (e) {
+        listEl.innerHTML = `<div class="sm-error">Failed to load filaments: ${e.message}</div>`;
+    }
+}
+
+function renderFilamentList(filaments) {
+    const listEl = document.getElementById('sm-filament-list');
+    if (!filaments.length) {
+        listEl.innerHTML = '<div class="sm-empty">No filaments found.</div>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    filaments.forEach(filament => {
+        const colorHex = filament.color_hex ? filament.color_hex.replace(/^#/, '') : 'CCCCCC';
+        const vendorName = filament.vendor?.name || 'Unknown';
+
+        const item = document.createElement('div');
+        item.className = 'sm-spool-item';
+        item.dataset.filamentId = filament.id;
+        item.innerHTML = `
+            <span class="color-swatch" style="background-color: #${colorHex}"></span>
+            <span class="sm-spool-name">${filament.name || 'Unnamed'}</span>
+            <span class="sm-spool-meta">${vendorName} · ${filament.material || '?'}</span>
+            <span class="sm-spool-id">#${filament.id}</span>
+        `;
+        item.addEventListener('click', () => selectFilament(filament.id, item));
+        listEl.appendChild(item);
+    });
+}
+
+function selectFilament(filamentId, itemEl) {
+    document.querySelectorAll('#sm-filament-list .sm-spool-item').forEach(el => el.classList.remove('selected'));
+    itemEl.classList.add('selected');
+    selectedFilamentId = filamentId;
+    document.getElementById('sm-create-spool-btn').disabled = false;
+}
+
+async function handleCreateSpoolAndImport() {
+    if (!selectedFilamentId) return;
+
+    const weight = document.getElementById('sm-new-spool-weight').value;
+    const btn = document.getElementById('sm-create-spool-btn');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+
+    try {
+        const newSpool = await createSpool(selectedFilamentId, weight || null);
+
+        const channelData = channelsData.find(c => c.channel === importModalChannel);
+        const uidString = channelData ? formatUidString(channelData.uid) : null;
+        if (uidString) {
+            try {
+                await patchSpoolUid(newSpool.id, uidString, 'rfid_uid1');
+            } catch (patchErr) {
+                console.warn('Failed to patch spool UID:', patchErr);
+                showStatus(`Spool created but Spoolman link failed: ${patchErr.message}`, 'error');
+            }
+        }
+
+        document.getElementById('import-modal').close();
+        const ch = importModalChannel;
+        openWriteModal(ch, 'create');
+        setTimeout(() => {
+            populateWriteForm(spoolToFilamentData(newSpool));
+            document.getElementById('write-modal-title').textContent =
+                `New Spoolman Spool #${newSpool.id} - Extruder ${ch + 1}`;
+        }, 50);
+
+        showStatus(`Spoolman spool #${newSpool.id} created. Review and click Write Tag.`, 'success');
+    } catch (e) {
+        console.error('Failed to create spool:', e);
+        showStatus(`Failed to create spool: ${e.message}`, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Create Spool & Import';
     }
 }
 
@@ -521,6 +1215,12 @@ function createChannelCard(channel) {
             if (filament.weight) {
                 info.innerHTML += `<div class="info-row"><strong>Weight:</strong> ${filament.weight}g</div>`;
             }
+
+            // Spoolman status row (async - starts as "Checking...")
+            const smRow = document.createElement('div');
+            smRow.className = 'info-row';
+            smRow.innerHTML = `<strong>Spoolman:</strong> <span class="spoolman-status-badge spoolman-checking" id="sm-status-ch${channel.channel}">Checking...</span>`;
+            info.appendChild(smRow);
         }
 
         card.appendChild(info);
@@ -607,12 +1307,18 @@ function createChannelCard(channel) {
 
     const exportBtn = actions.querySelector('.btn-export');
     if (exportBtn) {
-        exportBtn.addEventListener('click', () => exportTag(channel));
+        exportBtn.addEventListener('click', () => openExportModal(channel));
     }
 
     const importBtn = actions.querySelector('.btn-import');
     if (importBtn) {
-        importBtn.addEventListener('click', () => importTag(channel.channel));
+        importBtn.addEventListener('click', () => openImportModal(channel.channel));
+    }
+
+    // Fire async Spoolman status check (non-blocking)
+    if (filament.type) {
+        const badge = card.querySelector(`#sm-status-ch${channel.channel}`);
+        if (badge) checkSpoolmanStatusForChannel(channel, badge);
     }
 
     return card;
@@ -625,27 +1331,78 @@ function createChannelCard(channel) {
 function initializeModals() {
     const writeModal = document.getElementById('write-modal');
     const eraseModal = document.getElementById('erase-modal');
+    const importModal = document.getElementById('import-modal');
+    const exportModal = document.getElementById('export-modal');
 
-    // Close buttons
+    // Close buttons (close all modals)
     document.querySelectorAll('.modal-close').forEach(btn => {
         btn.addEventListener('click', () => {
             writeModal.close();
             eraseModal.close();
+            importModal.close();
+            exportModal.close();
         });
     });
 
     // Close on backdrop click
     writeModal.addEventListener('click', (e) => {
-        if (e.target === writeModal) {
-            writeModal.close();
-        }
+        if (e.target === writeModal) writeModal.close();
     });
 
     eraseModal.addEventListener('click', (e) => {
-        if (e.target === eraseModal) {
-            eraseModal.close();
-        }
+        if (e.target === eraseModal) eraseModal.close();
     });
+
+    importModal.addEventListener('click', (e) => {
+        if (e.target === importModal) importModal.close();
+    });
+
+    exportModal.addEventListener('click', (e) => {
+        if (e.target === exportModal) exportModal.close();
+    });
+
+    // Export modal tab switching
+    document.querySelectorAll('.export-tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchExportTab(btn.dataset.tab));
+    });
+
+    // Export JSON button
+    const exportJsonBtn = document.getElementById('export-json-btn');
+    if (exportJsonBtn) {
+        exportJsonBtn.addEventListener('click', () => {
+            exportModal.close();
+            if (exportModalChannel) exportTag(exportModalChannel);
+        });
+    }
+
+    // Export to Spoolman button
+    const exportSpoolmanBtn = document.getElementById('export-spoolman-btn');
+    if (exportSpoolmanBtn) {
+        exportSpoolmanBtn.addEventListener('click', async () => {
+            exportModal.close();
+            if (exportModalChannel) await exportTagToSpoolman(exportModalChannel);
+        });
+    }
+
+    // Export Spoolman filament search button
+    const exportSmSearchBtn = document.getElementById('export-sm-search-btn');
+    if (exportSmSearchBtn) exportSmSearchBtn.addEventListener('click', loadExportFilamentList);
+
+    // "Create new filament" checkbox — toggles selection requirement
+    const exportSmCreateNew = document.getElementById('export-sm-create-new');
+    if (exportSmCreateNew) {
+        exportSmCreateNew.addEventListener('change', () => {
+            if (exportSmCreateNew.checked) {
+                // Deselect any chosen filament and enable the button
+                document.querySelectorAll('#export-sm-filament-list .sm-spool-item').forEach(el => el.classList.remove('selected'));
+                exportSelectedFilamentId = null;
+                document.getElementById('export-spoolman-btn').disabled = false;
+            } else {
+                // Re-require a filament selection
+                document.getElementById('export-spoolman-btn').disabled = exportSelectedFilamentId === null;
+            }
+        });
+    }
 
     // Form submissions
     const writeForm = document.getElementById('write-form');
@@ -653,6 +1410,46 @@ function initializeModals() {
 
     const eraseForm = document.getElementById('erase-form');
     eraseForm.addEventListener('submit', handleEraseTag);
+
+    // Import modal tab switching
+    document.querySelectorAll('.import-tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchImportTab(btn.dataset.tab));
+    });
+
+    // Spoolman sub-tab switching
+    document.querySelectorAll('.spoolman-subtab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            switchSpoolmanSubtab(btn.dataset.subtab);
+            if (btn.dataset.subtab === 'filament') {
+                loadFilamentList();
+            }
+        });
+    });
+
+    // Spool search button
+    const smSearchBtn = document.getElementById('sm-search-btn');
+    if (smSearchBtn) smSearchBtn.addEventListener('click', loadSpoolList);
+
+    // Filament search button
+    const smFilSearchBtn = document.getElementById('sm-fil-search-btn');
+    if (smFilSearchBtn) smFilSearchBtn.addEventListener('click', loadFilamentList);
+
+    // Import selected spool button
+    const smImportSpoolBtn = document.getElementById('sm-import-spool-btn');
+    if (smImportSpoolBtn) smImportSpoolBtn.addEventListener('click', handleImportSelectedSpool);
+
+    // Create spool and import button
+    const smCreateSpoolBtn = document.getElementById('sm-create-spool-btn');
+    if (smCreateSpoolBtn) smCreateSpoolBtn.addEventListener('click', handleCreateSpoolAndImport);
+
+    // JSON file pick button
+    const importJsonPickBtn = document.getElementById('import-json-pick-btn');
+    if (importJsonPickBtn) {
+        importJsonPickBtn.addEventListener('click', () => {
+            importModal.close();
+            importTagFromJson(importModalChannel);
+        });
+    }
 }
 
 function openWriteModal(channel, mode) {
@@ -968,7 +1765,7 @@ function exportTag(channel) {
     showStatus('Tag exported successfully', 'success');
 }
 
-function importTag(channel) {
+function importTagFromJson(channel) {
     // Import tag data from JSON file
     const input = document.createElement('input');
     input.type = 'file';

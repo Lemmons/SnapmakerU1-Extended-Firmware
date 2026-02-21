@@ -763,4 +763,296 @@ details.advanced-section[open] summary {
     .modal-footer {
         padding: 15px 20px;
     }
+
+    .sm-spool-list {
+        max-height: 200px;
+    }
+
+    .spoolman-filters {
+        padding: 10px 15px;
+    }
+
+    .sm-spool-item {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+}
+
+/* ============================================================
+   Spoolman Integration
+   ============================================================ */
+
+/* Spoolman button variant */
+.btn-spoolman {
+    background-color: #7B4F9E;
+    color: white;
+    border: 1px solid #7B4F9E;
+}
+
+.btn-spoolman:hover {
+    background-color: #6a3d8f;
+    border-color: #6a3d8f;
+}
+
+/* Utility: hidden */
+.hidden {
+    display: none !important;
+}
+
+/* Import modal tab bar */
+.import-tab-bar {
+    display: flex;
+    border-bottom: 2px solid var(--border-color);
+    background-color: var(--surface);
+    margin: 0;
+}
+
+.import-tab-btn,
+.export-tab-btn {
+    flex: 1;
+    padding: 12px 20px;
+    background: none;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: -2px;
+}
+
+.import-tab-btn.active,
+.export-tab-btn.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+}
+
+.import-tab-btn:hover:not(.active),
+.export-tab-btn:hover:not(.active) {
+    color: var(--text-primary);
+}
+
+.import-tab-content,
+.export-tab-content {
+    padding: 0;
+}
+
+/* JSON import tab body */
+.import-json-body {
+    padding: 20px 30px;
+}
+
+/* Spoolman sub-tab bar */
+.spoolman-subtab-bar {
+    display: flex;
+    background-color: var(--background);
+    border-bottom: 1px solid var(--border-color);
+    padding: 0 20px;
+}
+
+.spoolman-subtab-btn {
+    padding: 10px 16px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+    margin-bottom: -1px;
+}
+
+.spoolman-subtab-btn.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--info-color, #17a2b8);
+}
+
+.spoolman-subtab-btn:hover:not(.active) {
+    color: var(--text-primary);
+}
+
+.spoolman-subtab-content {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Filter bar */
+.spoolman-filters {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    padding: 15px 20px;
+    background-color: var(--background);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.spoolman-filters label {
+    flex: 0 1 auto;
+    min-width: 100px;
+    font-size: 13px;
+}
+
+.spoolman-filters select,
+.spoolman-filters input[type="text"] {
+    min-width: 90px;
+    padding: 4px 8px;
+    font-size: 13px;
+}
+
+.btn-sm {
+    padding: 5px 12px;
+    font-size: 13px;
+}
+
+/* Spool / filament list */
+.sm-spool-list {
+    overflow-y: auto;
+    max-height: 300px;
+    padding: 4px 0;
+}
+
+.sm-spool-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.15s;
+    box-sizing: border-box;
+}
+
+.sm-spool-item:last-child {
+    border-bottom: none;
+}
+
+.sm-spool-item:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.sm-spool-item.selected {
+    background-color: rgba(33, 150, 243, 0.12);
+    border-left: 3px solid var(--primary-color);
+    padding-left: 17px;
+}
+
+.sm-spool-name {
+    font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sm-spool-meta {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.sm-spool-weight {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    min-width: 70px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.sm-spool-id {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    min-width: 36px;
+    text-align: right;
+    opacity: 0.7;
+}
+
+.sm-linked-badge {
+    background-color: var(--success-color, #28a745);
+    color: white;
+    font-size: 0.72rem;
+    padding: 2px 7px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.sm-loading,
+.sm-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.sm-error {
+    padding: 20px;
+    text-align: center;
+    color: var(--danger-color, #dc3545);
+}
+
+/* Unavailable notice */
+.sm-unavailable {
+    padding: 20px 30px;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* Weight input row in Create from Filament */
+.sm-create-weight {
+    padding: 15px 20px;
+    border-top: 1px solid var(--border-color);
+}
+
+.sm-create-weight label {
+    font-size: 13px;
+}
+
+/* Export modal: "create new filament" checkbox row */
+.export-sm-create-row {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-color);
+    background-color: var(--background);
+}
+
+/* Spoolman status badge on channel cards */
+.spoolman-status-badge {
+    font-size: 0.82rem;
+    padding: 1px 6px;
+    border-radius: 8px;
+    display: inline-block;
+}
+
+.spoolman-checking {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.spoolman-linked {
+    color: var(--success-color, #28a745);
+}
+
+.spoolman-link {
+    color: var(--success-color, #28a745);
+    text-decoration: none;
+}
+
+.spoolman-link:hover {
+    text-decoration: underline;
+}
+
+.spoolman-not-linked {
+    color: var(--text-secondary);
+}
+
+.spoolman-unavailable {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.spoolman-error {
+    color: var(--warning-color, #ffc107);
 }
